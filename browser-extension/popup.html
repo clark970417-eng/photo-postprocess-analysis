@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lumen Trace</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header class="masthead">
+        <div class="identity" aria-label="Lumen Trace">
+          <span class="aperture" aria-hidden="true"><i></i></span>
+          <span>
+            <strong>Lumen Trace</strong>
+            <small>POST-PROCESS READER</small>
+          </span>
+        </div>
+        <span class="version">GX · 0.1</span>
+      </header>
+
+      <section class="viewfinder" aria-live="polite">
+        <div class="image-stage" id="imageStage">
+          <img id="preview" alt="偵測到的貼文圖片預覽" hidden />
+          <div class="empty-state" id="emptyState">
+            <span class="focus-mark" aria-hidden="true"></span>
+            <p id="emptyTitle">正在尋找貼文圖片</p>
+            <small id="emptyHint">請停留在 X 或 Instagram 的貼文畫面</small>
+          </div>
+          <span class="scan-line" aria-hidden="true"></span>
+          <span class="corner corner-tl" aria-hidden="true"></span>
+          <span class="corner corner-tr" aria-hidden="true"></span>
+          <span class="corner corner-bl" aria-hidden="true"></span>
+          <span class="corner corner-br" aria-hidden="true"></span>
+        </div>
+
+        <div class="readout">
+          <span class="source"><i id="statusDot"></i><b id="sourceLabel">SCANNING</b></span>
+          <span class="dimensions" id="dimensions">— × —</span>
+        </div>
+      </section>
+
+      <section class="analysis-map" aria-label="分析內容">
+        <span><i class="tone"></i>明暗曲線</span>
+        <span><i class="color"></i>色彩分離</span>
+        <span><i class="detail"></i>局部質感</span>
+      </section>
+
+      <button class="primary" id="analyzeButton" type="button" disabled>
+        <span>分析這張照片</span>
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M4 10h11M11 6l4 4-4 4" />
+        </svg>
+      </button>
+
+      <p class="message" id="message">只在你按下按鈕後傳送這張公開貼文圖片。</p>
+
+      <footer>
+        <span>不讀取 Cookie、私訊或瀏覽紀錄</span>
+        <kbd>⌘ ⇧ L</kbd>
+      </footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

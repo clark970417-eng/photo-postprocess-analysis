@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Lumen Trace — 照片後期分析",
+  "version": "0.1.0",
+  "description": "從 X、Instagram 或任意網頁，把你選取的圖片送到 Lumen Trace 分析後期手法。",
+  "homepage_url": "https://github.com/clark970417-eng/photo-postprocess-analysis",
+  "permissions": ["activeTab", "contextMenus", "scripting"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "分析目前貼文圖片",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "analyze-current-post": {
+      "suggested_key": { "default": "Alt+Shift+L", "mac": "Command+Shift+L" },
+      "description": "分析目前貼文圖片"
+    }
+  }
+}

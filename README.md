@@ -37,6 +37,12 @@ Compare these original and edited images. Separate measured evidence from likely
 Analyze several public photos by this author and identify only the post-processing choices that recur across different scenes.
 ```
 
+## Opera GX extension
+
+The optional `browser-extension` folder adds a user-triggered shortcut for X and Instagram. Right-click a post image, click the toolbar button, or use the keyboard shortcut to open that image in the Lumen Trace analyzer.
+
+In Opera GX, open `opera:extensions`, enable Developer Mode, choose **Load unpacked**, and select the extracted `browser-extension` directory. The extension requests only `activeTab`, `contextMenus`, and `scripting`; it does not request cookies, browsing history, passwords, or persistent access to every site.
+
 ## Command-line tools
 
 The scripts use Python's standard library and do not require a package installation.
@@ -61,6 +67,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 .
 ├── SKILL.md                 # Main analysis workflow and response contract
 ├── agents/openai.yaml       # Skill display metadata and invocation policy
+├── browser-extension/       # Optional Opera GX / Chromium post-image shortcut
 ├── references/              # Analysis, software mapping, portfolio, and calibration guides
 └── scripts/                 # Deterministic image statistics and test utilities
 ```
