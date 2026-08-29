@@ -13,10 +13,12 @@
 
 * { box-sizing: border-box; }
 
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   width: 372px;
-  min-height: 522px;
+  min-height: 500px;
   overflow: hidden;
   color: var(--ink);
   background:
@@ -30,8 +32,8 @@ body {
 button, img { -webkit-user-drag: none; }
 
 .panel {
-  min-height: 522px;
-  padding: 20px;
+  min-height: 500px;
+  padding: 18px 20px 16px;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(238, 242, 244, 0.9));
 }
 
@@ -44,7 +46,7 @@ footer {
   justify-content: space-between;
 }
 
-.masthead { margin-bottom: 16px; }
+.masthead { margin-bottom: 13px; }
 
 .identity {
   display: flex;
@@ -110,7 +112,7 @@ kbd {
 
 .image-stage {
   position: relative;
-  height: 238px;
+  height: 210px;
   overflow: hidden;
   background:
     radial-gradient(circle at 50% 45%, rgba(56, 185, 214, 0.14), transparent 38%),
@@ -184,7 +186,7 @@ kbd {
   animation: scan 2.8s cubic-bezier(.45,0,.55,1) 1;
 }
 
-@keyframes scan { from { transform: translateY(0); } to { transform: translateY(238px); } }
+@keyframes scan { from { transform: translateY(0); } to { transform: translateY(210px); } }
 
 .corner {
   position: absolute;
@@ -213,7 +215,7 @@ kbd {
 .source b { color: var(--ink); font-size: inherit; }
 
 .analysis-map {
-  margin: 15px 1px 13px;
+  margin: 13px 1px 11px;
   color: #4b555c;
   font-size: 10px;
 }
@@ -249,7 +251,7 @@ kbd {
 
 .message {
   min-height: 28px;
-  margin: 13px 2px 7px;
+  margin: 11px 2px 6px;
   color: var(--muted);
   font-size: 10px;
   line-height: 1.45;
@@ -258,7 +260,7 @@ kbd {
 .message.error { color: #a83c30; }
 
 footer {
-  padding-top: 11px;
+  padding-top: 9px;
   border-top: 1px solid var(--rule);
   color: var(--muted);
   font-size: 8px;
