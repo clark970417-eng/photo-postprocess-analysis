@@ -1,0 +1,7 @@
+interface:
+  display_name: "Photo Post-Process Analysis"
+  short_description: "Translate visible edits into settings for major photo editors."
+  default_prompt: "Use $photo-postprocess-analysis to analyze this finished photo and give me evidence-based settings for Photoshop/ACR, Lightroom Classic, Evoto, PixCake, or Meitu."
+
+policy:
+  allow_implicit_invocation: true
