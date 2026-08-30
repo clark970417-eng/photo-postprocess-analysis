@@ -1,7 +1,17 @@
 const ANALYZER = 'https://lumen-stage.vercel.app/analyze'
 const CHATGPT = 'https://chatgpt.com/'
-const SUPPORTED_PAGE = /^https:\/\/(x\.com|twitter\.com|www\.instagram\.com)\//i
+const TRANSFER_KEY = 'lumenTraceHandoff'
 
+const {
+  buildAnalysisPrompt,
+  calculateCropBox,
+  classifyPage,
+  createTransfer,
+  getFreshTransfer,
+  makeDownloadFilename
+} = globalThis.LumenTraceCore
+
+const panel = document.querySelector('.panel')
 const preview = document.querySelector('#preview')
 const imageStage = document.querySelector('#imageStage')
 const emptyState = document.querySelector('#emptyState')
@@ -10,33 +20,52 @@ const emptyHint = document.querySelector('#emptyHint')
 const sourceLabel = document.querySelector('#sourceLabel')
 const statusDot = document.querySelector('#statusDot')
 const dimensions = document.querySelector('#dimensions')
-const chatgptButton = document.querySelector('#chatgptButton')
-const websiteButton = document.querySelector('#websiteButton')
+const primaryButton = document.querySelector('#primaryButton')
+const primaryLabel = document.querySelector('#primaryLabel')
+const primaryBadge = document.querySelector('#primaryBadge')
+const secondaryButton = document.querySelector('#secondaryButton')
+const secondaryLabel = document.querySelector('#secondaryLabel')
+const secondaryMeta = document.querySelector('#secondaryMeta')
 const message = document.querySelector('#message')
+const photoStep = document.querySelector('#photoStep')
+const pasteStep = document.querySelector('#pasteStep')
+const promptStep = document.querySelector('#promptStep')
 
+const handoffStorage = chrome.storage.session
+
+let activeTab = null
+let primaryAction = null
+let secondaryAction = null
 let selectedImage = null
 let selectedMetadata = null
+let transfer = null
 
-function buildAnalysisPrompt() {
-  const source = selectedMetadata?.platform || '社群貼文'
-  const width = selectedMetadata?.width || '未知'
-  const height = selectedMetadata?.height || '未知'
+function setSteps(done = [], current = null) {
+  const steps = { photo: photoStep, paste: pasteStep, prompt: promptStep }
+  for (const [name, element] of Object.entries(steps)) {
+    element.classList.toggle('done', done.includes(name))
+    element.classList.toggle('current', name === current)
+  }
+}
 
-  return `請用繁體中文分析我接下來上傳或貼上的同一張照片，逆向推測它可能採用的後期手法。請分析可見結果，不要把無法由成品證明的 RAW 數值、相機描述檔、預設、圖層堆疊或插件名稱說成事實。
+function setPrimary(label, badge, action, enabled = true, complete = false) {
+  primaryLabel.childNodes[0].nodeValue = label
+  primaryBadge.textContent = badge
+  primaryAction = action
+  primaryButton.disabled = !enabled
+  primaryButton.classList.toggle('complete', complete)
+}
 
-來源備註：${source}，偵測尺寸 ${width} × ${height}；可能經過社群平台縮放、銳化或壓縮。
+function setSecondary(label, meta, action, enabled = true) {
+  secondaryLabel.textContent = label
+  secondaryMeta.textContent = meta
+  secondaryAction = action
+  secondaryButton.disabled = !enabled
+}
 
-請依照以下證據框架完成：
-1. 先說明來源品質限制，區分社群壓縮、縮圖、對焦、鏡頭／濾鏡、現場光線與真正後期效果。
-2. 用一句精準的風格標籤，加上 2–3 句整體診斷。
-3. 建立證據表，逐項分開列出「直接觀察」「可能推論」「其他解釋」「信心：高／中／低與理由」。不要把觀察和推論混在一起。
-4. 依序檢查：曝光與黑白端、曲線 toe／中間調／shoulder、白平衡與色偏、HSL、陰影／中間調／高光分級、局部遮罩、主體與背景分離、皮膚與質感、柔光／bloom／diffusion／halation、清晰度／銳化／降噪／顆粒，以及有證據才提合成或液化。
-5. 列出最可能的後期堆疊順序：Profile／白平衡 → 全局影調 → 曲線 → HSL → 色彩分級 → 局部遮罩 → 修飾 → 柔光 → 銳化／降噪／顆粒 → 輸出。
-6. 提供 Lightroom Classic／Adobe Camera Raw 可重現的起始配方。用合理範圍（例如 Texture −10 到 −25），不要偽裝成原作者的精確數值；每組參數都說明它對應哪個可見線索，以及何時應停止或回退。
-7. 只有 Lightroom／ACR 不容易完成的效果，才補充 Photoshop 圖層與遮罩做法。若你認為可能用了 Evoto、像素蛋糕或美圖秀秀，請先描述可見操作，再提供保守的原生強度範圍，並同時給可手動重現的方法。
-8. 最後列出 3–5 個重製後應對照微調的校準點，以及哪些判斷需要原圖／成品對照才能提高信心。
-
-請先確認你已收到圖片；若圖片尚未附上，只提醒我上傳或貼上，不要憑這段文字開始猜測。`
+function setMessage(text, isError = false) {
+  message.textContent = text
+  message.classList.toggle('error', isError)
 }
 
 async function copyText(text) {
@@ -59,7 +88,7 @@ async function copyText(text) {
 
 function canvasToPng(canvas) {
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('無法處理圖片')), 'image/png')
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG_ENCODE_FAILED')), 'image/png')
   })
 }
 
@@ -67,38 +96,80 @@ async function captureVisiblePhoto() {
   const rect = selectedMetadata?.visibleRect
   const viewportWidth = selectedMetadata?.viewportWidth
   const viewportHeight = selectedMetadata?.viewportHeight
-  if (!rect || !viewportWidth || !viewportHeight || rect.width < 8 || rect.height < 8) throw new Error('無法定位圖片')
+  if (!rect || !viewportWidth || !viewportHeight) throw new Error('INVALID_CROP')
 
-  const screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' })
-  const bitmap = await createImageBitmap(await (await fetch(screenshot)).blob())
-  const scaleX = bitmap.width / viewportWidth
-  const scaleY = bitmap.height / viewportHeight
-  const sourceX = Math.max(0, Math.round(rect.x * scaleX))
-  const sourceY = Math.max(0, Math.round(rect.y * scaleY))
-  const sourceWidth = Math.min(bitmap.width - sourceX, Math.max(1, Math.round(rect.width * scaleX)))
-  const sourceHeight = Math.min(bitmap.height - sourceY, Math.max(1, Math.round(rect.height * scaleY)))
-  const canvas = document.createElement('canvas')
-  canvas.width = sourceWidth
-  canvas.height = sourceHeight
-  const context = canvas.getContext('2d', { alpha: false })
-  if (!context) throw new Error('無法處理圖片')
-  context.drawImage(bitmap, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, sourceWidth, sourceHeight)
-  bitmap.close()
-  return canvasToPng(canvas)
+  let bitmap = null
+  try {
+    const screenshot = await chrome.tabs.captureVisibleTab(selectedMetadata.windowId, { format: 'png' })
+    bitmap = await createImageBitmap(await (await fetch(screenshot)).blob())
+    const crop = calculateCropBox(rect, viewportWidth, viewportHeight, bitmap.width, bitmap.height)
+    const canvas = document.createElement('canvas')
+    canvas.width = crop.sourceWidth
+    canvas.height = crop.sourceHeight
+    const context = canvas.getContext('2d', { alpha: false })
+    if (!context) throw new Error('PNG_ENCODE_FAILED')
+    context.drawImage(
+      bitmap,
+      crop.sourceX,
+      crop.sourceY,
+      crop.sourceWidth,
+      crop.sourceHeight,
+      0,
+      0,
+      crop.sourceWidth,
+      crop.sourceHeight
+    )
+    return await canvasToPng(canvas)
+  } catch (error) {
+    if (error?.message === 'INVALID_CROP' || error?.message === 'PNG_ENCODE_FAILED' || error?.message === '無法定位圖片') throw error
+    throw new Error('CAPTURE_FAILED')
+  } finally {
+    bitmap?.close()
+  }
 }
 
-async function copyPhotoAndPrompt(prompt) {
-  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return copyText(prompt)
+async function writePngOnly(blob) {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('PNG_CLIPBOARD_UNSUPPORTED')
+  if (typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports('image/png')) throw new Error('PNG_CLIPBOARD_UNSUPPORTED')
+
   try {
-    const image = await captureVisiblePhoto()
-    await navigator.clipboard.write([new ClipboardItem({
-      'image/png': image,
-      'text/plain': new Blob([prompt], { type: 'text/plain' })
-    })])
+    let item
+    try {
+      item = new ClipboardItem({ 'image/png': blob }, { presentationStyle: 'attachment' })
+    } catch {
+      item = new ClipboardItem({ 'image/png': blob })
+    }
+    await navigator.clipboard.write([item])
+  } catch {
+    throw new Error('PNG_CLIPBOARD_FAILED')
+  }
+}
+
+function downloadPng(blob) {
+  try {
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = makeDownloadFilename()
+    document.body.append(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000)
     return true
   } catch {
-    return copyText(prompt)
+    return false
   }
+}
+
+async function saveTransfer(record) {
+  if (!handoffStorage) throw new Error('HANDOFF_SAVE_FAILED')
+  await handoffStorage.set({ [TRANSFER_KEY]: record })
+}
+
+async function loadTransfer() {
+  if (!handoffStorage) return null
+  const stored = await handoffStorage.get(TRANSFER_KEY)
+  return getFreshTransfer(stored[TRANSFER_KEY])
 }
 
 function findPrimaryPostImage() {
@@ -124,8 +195,8 @@ function findPrimaryPostImage() {
   const bottom = Math.min(innerHeight, rect.bottom)
   return {
     url: image.currentSrc || image.src || null,
-    width: image.naturalWidth || Math.round(image.getBoundingClientRect().width),
-    height: image.naturalHeight || Math.round(image.getBoundingClientRect().height),
+    width: image.naturalWidth || Math.round(rect.width),
+    height: image.naturalHeight || Math.round(rect.height),
     viewportWidth: innerWidth,
     viewportHeight: innerHeight,
     visibleRect: { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) }
@@ -133,11 +204,18 @@ function findPrimaryPostImage() {
 }
 
 function showError(title, hint) {
+  preview.hidden = true
+  imageStage.classList.remove('ready')
+  emptyState.hidden = false
   emptyTitle.textContent = title
   emptyHint.textContent = hint
-  sourceLabel.textContent = 'NO IMAGE'
-  message.textContent = hint
-  message.classList.add('error')
+  sourceLabel.textContent = 'CHECK'
+  statusDot.classList.remove('ready')
+  dimensions.textContent = '— × —'
+  setPrimary('無法繼續', 'CHECK', null, false)
+  setSecondary('關閉後重試', '重新開啟擴充功能', 'close', true)
+  setSteps([], null)
+  setMessage(hint, true)
 }
 
 function showImage(result, platform) {
@@ -148,7 +226,9 @@ function showImage(result, platform) {
     height: result.height,
     viewportWidth: result.viewportWidth,
     viewportHeight: result.viewportHeight,
-    visibleRect: result.visibleRect
+    visibleRect: result.visibleRect,
+    tabId: activeTab.id,
+    windowId: activeTab.windowId
   }
   preview.referrerPolicy = 'no-referrer'
   preview.src = result.url
@@ -158,61 +238,161 @@ function showImage(result, platform) {
   sourceLabel.textContent = platform
   statusDot.classList.add('ready')
   dimensions.textContent = `${result.width || '—'} × ${result.height || '—'}`
-  chatgptButton.disabled = false
-  websiteButton.disabled = false
-  message.classList.remove('error')
-  message.textContent = '會在本機複製畫面中的照片與提示；到 ChatGPT 按 ⌘V 即可貼上。'
+  setPrimary('複製照片', 'PNG ONLY', 'copy_photo', true)
+  setSecondary('在網站開啟', '不會自動送出', 'website', true)
+  setSteps([], 'photo')
+  setMessage('第一步只複製 PNG，避免 ChatGPT 把文字當成照片的替代格式。')
 }
 
-async function detectImage() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (!tab?.id || !SUPPORTED_PAGE.test(tab.url || '')) {
-    showError('這個頁面尚未支援', '請先開啟 X 或 Instagram 的圖片貼文，再點一次 Lumen Trace。')
+async function showChatGptResume() {
+  panel.classList.add('resume')
+  preview.hidden = true
+  imageStage.classList.remove('ready')
+  emptyState.hidden = false
+  transfer = await loadTransfer()
+
+  if (!transfer) {
+    showError('找不到待分析照片', '交接已過期或擴充功能剛重新載入；請回 X／Instagram 重新複製照片。')
     return
   }
 
+  const isDownload = transfer.imageMode === 'download'
+  emptyTitle.textContent = isDownload ? '請先上傳下載的 PNG' : '請先確認照片縮圖'
+  emptyHint.textContent = isDownload
+    ? '用 ChatGPT 的迴紋針選擇最新 Lumen-Trace PNG'
+    : '回到輸入框按 ⌘V；看到縮圖後再做第 3 步'
+  sourceLabel.textContent = 'CHATGPT HANDOFF'
+  statusDot.classList.add('ready')
+  dimensions.textContent = `${transfer.width || '—'} × ${transfer.height || '—'}`
+  setPrimary('已看到縮圖，複製提示', 'TEXT ONLY', 'copy_prompt', true)
+  setSecondary('回到照片貼文', transfer.platform || 'SOURCE', 'return_source', Number.isInteger(transfer.sourceTabId))
+  setSteps(['photo'], 'paste')
+  setMessage(isDownload
+    ? '上傳下載的 PNG；看到縮圖後再按上方按鈕複製提示。'
+    : '照片仍在剪貼簿。先按 ⌘V，確認出現縮圖，再複製提示。')
+}
+
+async function detectSourceImage() {
   try {
     const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: activeTab.id },
       func: findPrimaryPostImage
     })
     if (!result?.url || !/^https:\/\//i.test(result.url)) {
       showError('沒有找到可分析圖片', '將貼文圖片捲動到畫面中央後再試一次。')
       return
     }
-    const platform = /instagram\.com/i.test(tab.url) ? 'INSTAGRAM' : 'X POST'
+    const platform = /instagram\.com/i.test(activeTab.url) ? 'INSTAGRAM' : 'X POST'
     showImage(result, platform)
   } catch {
     showError('無法讀取目前分頁', '重新整理貼文頁面後再試一次。')
   }
 }
 
-chatgptButton.addEventListener('click', async () => {
-  if (!selectedImage) return
+async function handleCopyPhoto() {
+  primaryButton.disabled = true
+  secondaryButton.disabled = true
+  setMessage('正在本機裁切畫面中的貼文照片…')
 
-  chatgptButton.disabled = true
-  message.classList.remove('error')
-  message.textContent = '正在本機準備照片與分析提示…'
-  const copied = await copyPhotoAndPrompt(buildAnalysisPrompt())
+  try {
+    const blob = await captureVisiblePhoto()
+    let imageMode = 'clipboard'
+    try {
+      await writePngOnly(blob)
+    } catch {
+      if (!downloadPng(blob)) throw new Error('PNG_CLIPBOARD_FAILED')
+      imageMode = 'download'
+    }
+
+    transfer = createTransfer(selectedMetadata, buildAnalysisPrompt(selectedMetadata), Date.now(), imageMode)
+    await saveTransfer(transfer)
+    setPrimary('開啟 ChatGPT', 'STEP 2', 'open_chatgpt', true, true)
+    setSecondary('在網站開啟', '不會自動送出', 'website', true)
+    setSteps(['photo'], 'paste')
+    setMessage(imageMode === 'clipboard'
+      ? '照片已以純 PNG 複製。開啟 ChatGPT 後按 ⌘V，確認出現縮圖。'
+      : 'Opera 未能複製圖片，已改下載 PNG；到 ChatGPT 用迴紋針上傳。')
+  } catch (error) {
+    const storageFailure = /storage|quota/i.test(error?.message || '')
+    setPrimary('再試一次', 'PNG ONLY', 'copy_photo', true)
+    setSecondary('在網站開啟', '手動上傳圖片', 'website', true)
+    setSteps([], 'photo')
+    setMessage(storageFailure
+      ? '照片已準備，但無法保存交接提示。請重新載入擴充功能後再試。'
+      : '無法複製或下載照片；請允許剪貼簿寫入，或改用網站手動上傳。', true)
+  }
+}
+
+async function handleCopyPrompt() {
+  if (!transfer?.prompt) return
+  primaryButton.disabled = true
+  setMessage('正在複製分析提示；不會讀取或送出 ChatGPT 內容…')
+  const copied = await copyText(transfer.prompt)
   if (!copied) {
-    message.textContent = '無法複製照片或提示。請允許剪貼簿權限後再試一次。'
-    message.classList.add('error')
-    chatgptButton.disabled = false
+    setPrimary('再試一次', 'TEXT ONLY', 'copy_prompt', true)
+    setMessage('提示複製失敗。請允許剪貼簿寫入後重試。', true)
     return
   }
 
-  message.classList.remove('error')
-  message.textContent = '已複製。請在 ChatGPT 按 ⌘V 貼上後送出。'
-  await chrome.tabs.create({ url: CHATGPT })
-  window.close()
-})
+  transfer = { ...transfer, status: 'prompt_copied', promptCopiedAt: Date.now() }
+  await saveTransfer(transfer).catch(() => {})
+  setPrimary('提示已複製', '⌘V', 'close', true, true)
+  setSteps(['photo', 'paste', 'prompt'], null)
+  setMessage('回到輸入框按 ⌘V；確認「照片縮圖＋提示文字」同時存在，再送出。')
+  window.setTimeout(() => window.close(), 900)
+}
 
-websiteButton.addEventListener('click', () => {
-  if (!selectedImage) return
-  const url = new URL(ANALYZER)
-  url.searchParams.set('source', selectedImage)
-  chrome.tabs.create({ url: url.toString() })
-  window.close()
-})
+async function handlePrimary() {
+  if (primaryAction === 'copy_photo') return handleCopyPhoto()
+  if (primaryAction === 'open_chatgpt') {
+    try {
+      await chrome.tabs.create({ url: CHATGPT })
+      window.close()
+    } catch {
+      setPrimary('再試一次', 'STEP 2', 'open_chatgpt', true)
+      setMessage('無法開啟 ChatGPT；請手動前往 chatgpt.com。', true)
+    }
+    return
+  }
+  if (primaryAction === 'copy_prompt') return handleCopyPrompt()
+  if (primaryAction === 'close') window.close()
+}
 
-void detectImage()
+async function handleSecondary() {
+  if (secondaryAction === 'website' && selectedImage) {
+    const url = new URL(ANALYZER)
+    url.searchParams.set('source', selectedImage)
+    await chrome.tabs.create({ url: url.toString() })
+    window.close()
+    return
+  }
+  if (secondaryAction === 'return_source' && Number.isInteger(transfer?.sourceTabId)) {
+    try {
+      await chrome.tabs.update(transfer.sourceTabId, { active: true })
+      window.close()
+    } catch {
+      setMessage('原貼文分頁已關閉；請手動回到 X／Instagram。', true)
+    }
+    return
+  }
+  if (secondaryAction === 'close') window.close()
+}
+
+async function detectContext() {
+  ;[activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const context = classifyPage(activeTab?.url || '')
+  if (!activeTab?.id || context === 'unsupported') {
+    showError('這個頁面尚未支援', '請開啟 X／Instagram 圖片貼文，或在 ChatGPT 繼續剛才的交接。')
+    return
+  }
+  if (context === 'chatgpt') {
+    await showChatGptResume()
+    return
+  }
+  await detectSourceImage()
+}
+
+primaryButton.addEventListener('click', () => void handlePrimary())
+secondaryButton.addEventListener('click', () => void handleSecondary())
+
+void detectContext()

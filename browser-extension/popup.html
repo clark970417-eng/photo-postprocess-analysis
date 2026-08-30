@@ -16,7 +16,7 @@
             <small>POST-PROCESS READER</small>
           </span>
         </div>
-        <span class="version">GX · 0.2</span>
+        <span class="version">GX · 0.3</span>
       </header>
 
       <section class="viewfinder" aria-live="polite">
@@ -40,33 +40,40 @@
         </div>
       </section>
 
-      <section class="analysis-map" aria-label="分析內容">
+      <section class="analysis-map" id="analysisMap" aria-label="分析內容">
         <span><i class="tone"></i>明暗曲線</span>
         <span><i class="color"></i>色彩分離</span>
         <span><i class="detail"></i>局部質感</span>
       </section>
 
+      <ol class="handoff-steps" id="handoffSteps" aria-label="ChatGPT 交接進度">
+        <li id="photoStep"><b>1</b><span>複製照片</span></li>
+        <li id="pasteStep"><b>2</b><span>貼出縮圖</span></li>
+        <li id="promptStep"><b>3</b><span>加入提示</span></li>
+      </ol>
+
       <div class="actions">
-        <button class="primary" id="chatgptButton" type="button" aria-describedby="message" disabled>
-          <span class="cta-label">用 ChatGPT 分析 <small>免 API</small></span>
+        <button class="primary" id="primaryButton" type="button" aria-describedby="message" disabled>
+          <span class="cta-label" id="primaryLabel">複製照片 <small id="primaryBadge">PNG ONLY</small></span>
           <svg viewBox="0 0 20 20" aria-hidden="true">
             <path d="M4 10h11M11 6l4 4-4 4" />
           </svg>
         </button>
 
-        <button class="secondary" id="websiteButton" type="button" aria-describedby="message" disabled>
-          <span>在網站開啟</span>
-          <small>不會自動送出</small>
+        <button class="secondary" id="secondaryButton" type="button" aria-describedby="message" disabled>
+          <span id="secondaryLabel">在網站開啟</span>
+          <small id="secondaryMeta">不會自動送出</small>
         </button>
       </div>
 
-      <p class="message" id="message" role="status" aria-live="polite">會在本機複製照片與專業提示；到 ChatGPT 按 ⌘V 即可貼上。</p>
+      <p class="message" id="message" role="status" aria-live="polite">先只複製照片；看到 ChatGPT 縮圖後，再回來複製分析提示。</p>
 
       <footer>
-        <span>不讀取 Cookie、私訊或瀏覽紀錄</span>
+        <span>不讀 ChatGPT、Cookie、私訊或紀錄</span>
         <kbd>⌘ ⇧ L</kbd>
       </footer>
     </main>
+    <script src="core.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
