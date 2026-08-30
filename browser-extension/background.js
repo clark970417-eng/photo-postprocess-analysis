@@ -8,6 +8,10 @@ const finalizingDownloads = new Set()
 const cancellingTransfers = new Set()
 let handoffQueue = Promise.resolve()
 
+function downloadsAvailable() {
+  return Boolean(chrome.downloads?.download && chrome.downloads?.search)
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: 'lumen-analyze-image',
@@ -213,6 +217,7 @@ async function finalizeFallbackDownload(downloadId, state, knownItem = null) {
 }
 
 async function startTrackedDownload(message) {
+  if (!downloadsAvailable()) return { ok: false, error: 'DOWNLOADS_UNAVAILABLE', started: false }
   const downloadUrl = getDownloadRequestUrl(message)
   if (!downloadUrl) return { ok: false, error: 'INVALID_DOWNLOAD_REQUEST' }
 
@@ -272,6 +277,12 @@ async function startTrackedDownload(message) {
 async function recoverPendingDownload() {
   const record = await getStoredHandoff()
   if (!record || !['download_starting', 'download_pending'].includes(record.status)) return { ok: true, recovered: false }
+  if (!downloadsAvailable()) {
+    await chrome.storage.session.set({
+      [TRANSFER_KEY]: makeTransferRecord(record, 'download_failed', 'download')
+    })
+    return { ok: false, error: 'DOWNLOADS_UNAVAILABLE', recovered: false }
+  }
 
   let items = []
   if (Number.isInteger(record.downloadId)) {
@@ -306,7 +317,7 @@ async function refreshHandoff() {
   return recoverPendingDownload()
 }
 
-chrome.downloads.onChanged.addListener((delta) => {
+chrome.downloads?.onChanged?.addListener((delta) => {
   if (!delta.state || (delta.state.current !== 'complete' && delta.state.current !== 'interrupted')) return
   void serializeHandoff(() => finalizeFallbackDownload(delta.id, delta.state.current)).catch(() => {})
 })

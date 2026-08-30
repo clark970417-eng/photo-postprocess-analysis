@@ -211,6 +211,25 @@ test('rejects arbitrary source hosts and non-Story source transfers', async () =
   assert.equal(downloadRequests.length, 0)
 })
 
+test('loads without a downloads API and reports a supported Safari fallback', async () => {
+  const downloadsApi = chrome.downloads
+  chrome.downloads = undefined
+  try {
+    const transfer = { ...makeTransfer(), platform: 'IG STORY' }
+    const response = await sendMessage({
+      type: 'DOWNLOAD_SOURCE_HANDOFF',
+      sourceUrl: 'https://scontent.cdninstagram.com/photo.jpg',
+      filename: 'Lumen-Trace-IG-Story-2026-08-30.jpg',
+      transfer
+    })
+    assert.equal(response.ok, false)
+    assert.equal(response.error, 'DOWNLOADS_UNAVAILABLE')
+    assert.equal(response.started, false)
+  } finally {
+    chrome.downloads = downloadsApi
+  }
+})
+
 test('rejects a completed Story download that redirects off the allowlist or is not an image', async () => {
   for (const invalid of [
     { finalUrl: 'https://evil.example/photo.jpg', mime: 'image/jpeg' },

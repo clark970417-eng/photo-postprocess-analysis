@@ -25,7 +25,7 @@ test('analysis prompt carries evidence rules and a visible version handshake', (
   const prompt = core.buildAnalysisPrompt({ platform: 'X POST', width: 1600, height: 1067 })
   assert.match(prompt, /觀察.*推論.*其他解釋.*信心/s)
   assert.match(prompt, /Lightroom Classic／Adobe Camera Raw/)
-  assert.match(prompt, /LUMEN_TRACE_READY v0\.4\.0/)
+  assert.match(prompt, /LUMEN_TRACE_READY v0\.5\.0/)
   assert.match(prompt, /1600 × 1067/)
 })
 
@@ -83,12 +83,13 @@ test('source download name preserves supported served formats and rejects unknow
 
 test('manifest adds session storage but no ChatGPT host permission', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'))
-  assert.equal(manifest.version, '0.4.0')
+  assert.equal(manifest.version, '0.5.0')
   assert.ok(manifest.permissions.includes('storage'))
   assert.ok(manifest.permissions.includes('downloads'))
   assert.equal(manifest.host_permissions, undefined)
   assert.equal(manifest.optional_host_permissions, undefined)
   assert.equal(manifest.content_scripts, undefined)
+  assert.equal(manifest.browser_specific_settings.safari.strict_min_version, '16.4')
   const popup = fs.readFileSync(path.join(extensionRoot, 'popup.js'), 'utf8')
   assert.match(popup, /chrome\.storage\.session/)
   assert.doesNotMatch(popup, /chrome\.storage\.local/)
@@ -129,6 +130,9 @@ test('Instagram Story uses a direct source download with a PNG fallback', () => 
   assert.match(background, /validInstagramSourceUrl/)
   assert.match(background, /cdninstagram\.com/)
   assert.match(background, /fbcdn\.net/)
+  assert.match(background, /chrome\.downloads\?\.onChanged\?\.addListener/)
+  assert.match(background, /DOWNLOADS_UNAVAILABLE/)
+  assert.match(popup, /Safari 不提供擴充功能下載 API/)
 })
 
 test('prompt copying is gated by an explicit thumbnail confirmation', () => {

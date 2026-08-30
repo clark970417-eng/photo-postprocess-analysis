@@ -336,16 +336,22 @@ function showImage(result, platform) {
   sourceLabel.textContent = platform
   statusDot.classList.add('ready')
   dimensions.textContent = `${result.width || '—'} × ${result.height || '—'}`
-  if (platform === 'IG STORY') {
+  const canDownloadSource = Boolean(chrome.downloads?.download)
+  if (platform === 'IG STORY' && canDownloadSource) {
     setPrimary('原畫質下載並交接', 'NO RE-ENCODE', 'download_source', true)
     setSecondary('改用畫面複製', 'PNG 備援', 'copy_photo', true)
+  } else if (platform === 'IG STORY') {
+    setPrimary('複製限動照片', 'PNG ONLY', 'copy_photo', true)
+    setSecondary('連圖片網址在網站開啟', '可選功能', 'website', true)
   } else {
     setPrimary('複製照片', 'PNG ONLY', 'copy_photo', true)
     setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
   }
   setSteps([], 'photo')
-  setMessage(platform === 'IG STORY'
+  setMessage(platform === 'IG STORY' && canDownloadSource
     ? '會下載 Instagram 此刻提供給瀏覽器的照片檔，不截圖、不重新壓縮；IG 上傳時可能已壓縮。'
+    : platform === 'IG STORY'
+      ? 'Safari 不提供擴充功能下載 API；改以畫面中的限動照片製成 PNG，再交給 ChatGPT。'
     : '第一步只複製 PNG，避免 ChatGPT 把文字當成照片的替代格式。')
 }
 

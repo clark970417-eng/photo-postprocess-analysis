@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lumen Trace — 照片後期分析",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "從 X 或 Instagram 鎖定貼文與限動照片，以來源檔下載或純圖片剪貼簿交給 ChatGPT 分析後期手法。",
   "homepage_url": "https://github.com/clark970417-eng/photo-postprocess-analysis",
   "icons": {
@@ -24,6 +24,11 @@
     "analyze-current-post": {
       "suggested_key": { "default": "Alt+Shift+L", "mac": "Command+Shift+L" },
       "description": "傳目前貼文圖片網址到 Lumen Trace 網站"
+    }
+  },
+  "browser_specific_settings": {
+    "safari": {
+      "strict_min_version": "16.4"
     }
   }
 }

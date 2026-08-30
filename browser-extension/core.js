@@ -27,7 +27,7 @@
 7. 只有 Lightroom／ACR 不容易完成的效果，才補充 Photoshop 圖層與遮罩做法。若你認為可能用了 Evoto、像素蛋糕或美圖秀秀，請先描述可見操作，再提供保守的原生強度範圍，並同時給可手動重現的方法。
 8. 最後列出 3–5 個重製後應對照微調的校準點，以及哪些判斷需要原圖／成品對照才能提高信心。
 
-收到圖片時，第一行固定輸出「LUMEN_TRACE_READY v0.4.0｜已收到圖片」。若圖片尚未附上，只輸出「LUMEN_TRACE_NEEDS_IMAGE」，不要憑這段文字開始猜測。`
+收到圖片時，第一行固定輸出「LUMEN_TRACE_READY v0.5.0｜已收到圖片」。若圖片尚未附上，只輸出「LUMEN_TRACE_NEEDS_IMAGE」，不要憑這段文字開始猜測。`
   }
 
   function calculateCropBox(rect, viewportWidth, viewportHeight, bitmapWidth, bitmapHeight) {
