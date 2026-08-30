@@ -16,7 +16,7 @@
             <small>POST-PROCESS READER</small>
           </span>
         </div>
-        <span class="version">GX · 0.3</span>
+        <span class="version">GX · 0.3.1</span>
       </header>
 
       <section class="viewfinder" aria-live="polite">
@@ -52,6 +52,11 @@
         <li id="promptStep"><b>3</b><span>加入提示</span></li>
       </ol>
 
+      <label class="confirm-row" id="photoConfirmRow" hidden>
+        <input id="photoConfirmed" type="checkbox" />
+        <span>我已在 ChatGPT 看到照片縮圖</span>
+      </label>
+
       <div class="actions">
         <button class="primary" id="primaryButton" type="button" aria-describedby="message" disabled>
           <span class="cta-label" id="primaryLabel">複製照片 <small id="primaryBadge">PNG ONLY</small></span>
@@ -69,7 +74,7 @@
       <p class="message" id="message" role="status" aria-live="polite">先只複製照片；看到 ChatGPT 縮圖後，再回來複製分析提示。</p>
 
       <footer>
-        <span>不讀 ChatGPT、Cookie、私訊或紀錄</span>
+        <span>不讀對話內容、Cookie、私訊或紀錄</span>
         <kbd>⌘ ⇧ L</kbd>
       </footer>
     </main>

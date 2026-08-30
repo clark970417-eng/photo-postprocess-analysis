@@ -25,7 +25,7 @@ test('analysis prompt carries evidence rules and a visible version handshake', (
   const prompt = core.buildAnalysisPrompt({ platform: 'X POST', width: 1600, height: 1067 })
   assert.match(prompt, /觀察.*推論.*其他解釋.*信心/s)
   assert.match(prompt, /Lightroom Classic／Adobe Camera Raw/)
-  assert.match(prompt, /LUMEN_TRACE_READY v0\.3/)
+  assert.match(prompt, /LUMEN_TRACE_READY v0\.3\.1/)
   assert.match(prompt, /1600 × 1067/)
 })
 
@@ -49,7 +49,8 @@ test('crop box rejects invalid geometry', () => {
 
 test('handoff record stores no source URL or image bytes', () => {
   const record = core.createTransfer({ platform: 'X POST', width: 1000, height: 700, tabId: 42, url: 'https://secret.example/image' }, 'prompt', 100, 'clipboard')
-  assert.deepEqual(Object.keys(record).sort(), ['height', 'imageMode', 'platform', 'prompt', 'savedAt', 'sourceTabId', 'status', 'version', 'width'])
+  assert.deepEqual(Object.keys(record).sort(), ['height', 'imageMode', 'platform', 'prompt', 'savedAt', 'sourceTabId', 'status', 'transferId', 'version', 'width'])
+  assert.match(record.transferId, /^[a-zA-Z0-9-]{8,80}$/)
   assert.equal(record.sourceTabId, 42)
   assert.equal(record.imageMode, 'clipboard')
 })
@@ -61,20 +62,28 @@ test('handoff remains fresh for thirty minutes only', () => {
   assert.equal(core.getFreshTransfer(record, 999), null)
 })
 
+test('an unfinished photo reservation expires after two minutes', () => {
+  const record = { ...core.createTransfer({}, 'prompt', 1_000), status: 'photo_reserving' }
+  assert.equal(core.getFreshTransfer(record, 1_000 + core.RESERVATION_TTL_MS), record)
+  assert.equal(core.getFreshTransfer(record, 1_001 + core.RESERVATION_TTL_MS), null)
+})
+
 test('download name is deterministic and filesystem-safe', () => {
   assert.equal(core.makeDownloadFilename(new Date('2026-08-30T04:03:02.001Z')), 'Lumen-Trace-2026-08-30_04-03-02-001.png')
 })
 
 test('manifest adds session storage but no ChatGPT host permission', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'))
-  assert.equal(manifest.version, '0.3.0')
+  assert.equal(manifest.version, '0.3.1')
   assert.ok(manifest.permissions.includes('storage'))
+  assert.ok(manifest.permissions.includes('downloads'))
   assert.equal(manifest.host_permissions, undefined)
   assert.equal(manifest.optional_host_permissions, undefined)
   assert.equal(manifest.content_scripts, undefined)
   const popup = fs.readFileSync(path.join(extensionRoot, 'popup.js'), 'utf8')
   assert.match(popup, /chrome\.storage\.session/)
   assert.doesNotMatch(popup, /chrome\.storage\.local/)
+  assert.match(popup, /type: 'CLEAR_HANDOFF'/)
 })
 
 test('clipboard implementation never combines PNG with text/plain', () => {
@@ -83,4 +92,28 @@ test('clipboard implementation never combines PNG with text/plain', () => {
   assert.match(popup, /'image\/png': blob/)
   assert.doesNotMatch(pngItem, /text\/plain/)
   assert.doesNotMatch(popup, /copyPhotoAndPrompt/)
+})
+
+test('download fallback waits for a completed browser download', () => {
+  const background = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8')
+  assert.match(background, /chrome\.downloads\.download/)
+  assert.match(background, /delta\.state\.current !== 'complete'/)
+  assert.match(background, /delta\.state\.current !== 'interrupted'/)
+  assert.match(background, /makeTransferRecord\(record, 'photo_downloaded', 'download'\)/)
+  assert.match(background, /finalizingDownloads\.has\(downloadId\)/)
+  assert.match(background, /REFRESH_DOWNLOAD_STATUS/)
+  assert.match(background, /filenameMatches\(item\.filename, record\.filename\)/)
+  assert.match(background, /serializeHandoff\(\(\) => finalizeFallbackDownload/)
+  assert.doesNotMatch(background, /link\.click\(\)/)
+})
+
+test('prompt copying is gated by an explicit thumbnail confirmation', () => {
+  const popup = fs.readFileSync(path.join(extensionRoot, 'popup.js'), 'utf8')
+  const html = fs.readFileSync(path.join(extensionRoot, 'popup.html'), 'utf8')
+  assert.match(html, /id="photoConfirmed" type="checkbox"/)
+  assert.match(popup, /!photoConfirmed\.checked/)
+  assert.match(popup, /確認縮圖後複製提示/)
+  assert.match(popup, /transfer\.status === 'photo_reserving'/)
+  assert.match(popup, /abandon_handoff/)
+  assert.match(popup, /type: 'COMPLETE_HANDOFF'/)
 })

@@ -18,7 +18,7 @@
 body {
   margin: 0;
   width: 372px;
-  height: 536px;
+  height: 566px;
   overflow: hidden;
   color: var(--ink);
   background:
@@ -32,7 +32,7 @@ body {
 button, img { -webkit-user-drag: none; }
 
 .panel {
-  height: 536px;
+  height: 566px;
   padding: 14px 20px 12px;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(238, 242, 244, 0.9));
 }
@@ -293,6 +293,27 @@ kbd {
 
 .panel.resume .analysis-map { opacity: 0.7; }
 .panel.resume .source i { background: var(--cobalt); box-shadow: 0 0 0 3px rgba(40, 86, 232, 0.13); }
+
+.confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(237, 90, 72, 0.48);
+  color: #71352e;
+  background: rgba(237, 90, 72, 0.08);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.confirm-row input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--cobalt);
+}
 
 .actions {
   display: grid;

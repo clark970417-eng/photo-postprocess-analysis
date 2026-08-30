@@ -1,16 +1,23 @@
 const ANALYZER = 'https://lumen-stage.vercel.app/analyze'
+const CHATGPT = 'https://chatgpt.com/'
+const TRANSFER_KEY = 'lumenTraceHandoff'
 const SUPPORTED_PAGES = ['https://x.com/*', 'https://twitter.com/*', 'https://www.instagram.com/*']
+const TRANSFER_TTL_MS = 30 * 60 * 1000
+const RESERVATION_TTL_MS = 2 * 60 * 1000
+const finalizingDownloads = new Set()
+const cancellingTransfers = new Set()
+let handoffQueue = Promise.resolve()
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: 'lumen-analyze-image',
-    title: '在 Lumen Trace 網站開啟這張圖片',
+    title: '傳圖片網址到 Lumen Trace 網站',
     contexts: ['image'],
     documentUrlPatterns: SUPPORTED_PAGES
   })
   chrome.contextMenus.create({
     id: 'lumen-analyze-post',
-    title: '在 Lumen Trace 網站開啟貼文主圖',
+    title: '傳貼文主圖網址到 Lumen Trace 網站',
     contexts: ['page'],
     documentUrlPatterns: SUPPORTED_PAGES
   })
@@ -22,6 +29,277 @@ function openAnalyzer(imageUrl) {
   url.searchParams.set('source', imageUrl)
   chrome.tabs.create({ url: url.toString() })
 }
+
+function validFallbackRequest(message) {
+  return message?.type === 'DOWNLOAD_PNG_FALLBACK' &&
+    typeof message.dataUrl === 'string' &&
+    message.dataUrl.startsWith('data:image/png;base64,') &&
+    /^Lumen-Trace-[A-Za-z0-9_.-]+\.png$/.test(message.filename || '') &&
+    validTransfer(message.transfer)
+}
+
+function validTransfer(transfer) {
+  return transfer?.version === 1 &&
+    typeof transfer.transferId === 'string' &&
+    /^[a-zA-Z0-9-]{8,80}$/.test(transfer.transferId) &&
+    typeof transfer.prompt === 'string' &&
+    transfer.prompt.length > 0 &&
+    transfer.prompt.length < 20000 &&
+    Number.isFinite(transfer.savedAt)
+}
+
+function makeTransferRecord(transfer, status, imageMode, downloadId = null, filename = null) {
+  const record = {
+    version: 1,
+    transferId: transfer.transferId,
+    prompt: transfer.prompt,
+    platform: typeof transfer.platform === 'string' ? transfer.platform : '社群貼文',
+    width: Number.isFinite(transfer.width) ? transfer.width : null,
+    height: Number.isFinite(transfer.height) ? transfer.height : null,
+    sourceTabId: Number.isInteger(transfer.sourceTabId) ? transfer.sourceTabId : null,
+    savedAt: transfer.savedAt,
+    imageMode,
+    status
+  }
+  if (Number.isInteger(downloadId)) record.downloadId = downloadId
+  if (typeof filename === 'string' && filename) record.filename = filename
+  return record
+}
+
+function isFreshHandoff(record, now = Date.now()) {
+  if (!validTransfer(record) || now < record.savedAt) return false
+  if (record.status === 'download_failed') return false
+  const ttl = record.status === 'photo_reserving' ? RESERVATION_TTL_MS : TRANSFER_TTL_MS
+  return now - record.savedAt <= ttl
+}
+
+function serializeHandoff(task) {
+  const run = handoffQueue.then(task, task)
+  handoffQueue = run.catch(() => {})
+  return run
+}
+
+async function getStoredHandoff() {
+  const stored = await chrome.storage.session.get(TRANSFER_KEY)
+  return stored[TRANSFER_KEY] || null
+}
+
+async function saveHandoff(message) {
+  if (!validTransfer(message?.transfer)) return { ok: false, error: 'INVALID_HANDOFF' }
+  const existing = await getStoredHandoff()
+  if (isFreshHandoff(existing) && existing.transferId !== message.transfer.transferId) {
+    return {
+      ok: false,
+      error: 'HANDOFF_IN_PROGRESS',
+      currentStatus: existing.status,
+      existingTransferId: existing.transferId
+    }
+  }
+  const status = message.transfer.status === 'photo_reserving' ? 'photo_reserving' : 'photo_copied'
+  const imageMode = message.transfer.imageMode === 'download' ? 'download' : 'clipboard'
+  await chrome.storage.session.set({
+    [TRANSFER_KEY]: makeTransferRecord(message.transfer, status, imageMode)
+  })
+  return { ok: true }
+}
+
+async function clearHandoff(transferId, reservingOnly = false) {
+  const existing = await getStoredHandoff()
+  if (!existing) return { ok: true, removed: false, absent: true }
+  if (existing.transferId !== transferId) return { ok: false, error: 'HANDOFF_CHANGED' }
+  if (reservingOnly && existing.status !== 'photo_reserving') return { ok: false, error: 'HANDOFF_ADVANCED' }
+  await chrome.storage.session.remove(TRANSFER_KEY)
+  return { ok: true, removed: true }
+}
+
+async function completeHandoff(transferId) {
+  const existing = await getStoredHandoff()
+  if (!existing) return { ok: true, cleaned: true }
+  if (existing.transferId !== transferId) return { ok: false, error: 'HANDOFF_CHANGED' }
+
+  try {
+    await chrome.storage.session.remove(TRANSFER_KEY)
+    return { ok: true, cleaned: true }
+  } catch {
+    await chrome.storage.session.set({
+      [TRANSFER_KEY]: {
+        version: 1,
+        transferId,
+        savedAt: Date.now(),
+        status: 'prompt_copied'
+      }
+    })
+    return { ok: true, cleaned: false, tombstoned: true }
+  }
+}
+
+function filenameMatches(actualPath, requestedName) {
+  if (typeof actualPath !== 'string' || typeof requestedName !== 'string') return false
+  const actual = actualPath.split(/[\\/]/).pop()
+  const dot = requestedName.lastIndexOf('.')
+  const stem = dot > 0 ? requestedName.slice(0, dot) : requestedName
+  const extension = dot > 0 ? requestedName.slice(dot) : ''
+  const escapedStem = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escapedExtension = extension.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${escapedStem}(?: \\(\\d+\\))?${escapedExtension}$`).test(actual)
+}
+
+function recordMatchesDownload(record, item) {
+  if (!record || !item) return false
+  if (record.downloadId === item.id) return true
+  if (!['download_starting', 'download_pending'].includes(record.status) || !record.filename) return false
+  if (!filenameMatches(item.filename, record.filename)) return false
+  const startedAt = Date.parse(item.startTime || '')
+  return !Number.isFinite(startedAt) || startedAt >= record.savedAt - 10000
+}
+
+async function finalizeFallbackDownload(downloadId, state, knownItem = null) {
+  if (finalizingDownloads.has(downloadId)) return
+  finalizingDownloads.add(downloadId)
+
+  try {
+    const record = await getStoredHandoff()
+    const item = knownItem || (await chrome.downloads.search({ id: downloadId }))[0]
+    if (!recordMatchesDownload(record, item)) return
+    if (cancellingTransfers.has(record.transferId)) return
+
+    if (state === 'complete') {
+      const completed = makeTransferRecord(record, 'photo_downloaded', 'download')
+      await chrome.storage.session.set({ [TRANSFER_KEY]: completed })
+      await chrome.tabs.create({ url: CHATGPT }).catch(() => {})
+      return
+    }
+
+    if (state === 'interrupted') {
+      const failed = makeTransferRecord(record, 'download_failed', 'download')
+      await chrome.storage.session.set({ [TRANSFER_KEY]: failed })
+    }
+  } finally {
+    finalizingDownloads.delete(downloadId)
+  }
+}
+
+async function startFallbackDownload(message) {
+  if (!validFallbackRequest(message)) return { ok: false, error: 'INVALID_DOWNLOAD_REQUEST' }
+
+  const existing = await getStoredHandoff()
+  if (isFreshHandoff(existing) && existing.transferId !== message.transfer.transferId) {
+    return {
+      ok: false,
+      error: 'HANDOFF_IN_PROGRESS',
+      currentStatus: existing.status,
+      existingTransferId: existing.transferId,
+      started: false
+    }
+  }
+
+  const starting = makeTransferRecord(message.transfer, 'download_starting', 'download_pending', null, message.filename)
+  try {
+    await chrome.storage.session.set({ [TRANSFER_KEY]: starting })
+  } catch {
+    return { ok: false, error: 'HANDOFF_SAVE_FAILED', started: false }
+  }
+
+  let downloadId
+  try {
+    downloadId = await chrome.downloads.download({
+      url: message.dataUrl,
+      filename: message.filename,
+      conflictAction: 'uniquify',
+      saveAs: false
+    })
+  } catch {
+    try {
+      await clearHandoff(message.transfer.transferId)
+    } catch {}
+    return { ok: false, error: 'DOWNLOAD_START_FAILED', started: false }
+  }
+
+  const pending = makeTransferRecord(message.transfer, 'download_pending', 'download_pending', downloadId, message.filename)
+  let tracking = 'active'
+
+  try {
+    await chrome.storage.session.set({ [TRANSFER_KEY]: pending })
+  } catch {
+    tracking = 'event_recovery'
+  }
+
+  try {
+    const [item] = await chrome.downloads.search({ id: downloadId })
+    if (item?.state === 'complete' || item?.state === 'interrupted') {
+      await finalizeFallbackDownload(downloadId, item.state, item)
+    }
+  } catch {}
+
+  return { ok: true, downloadId, tracking, started: true }
+}
+
+async function recoverPendingDownload() {
+  const record = await getStoredHandoff()
+  if (!record || !['download_starting', 'download_pending'].includes(record.status)) return { ok: true, recovered: false }
+
+  let items = []
+  if (Number.isInteger(record.downloadId)) {
+    items = await chrome.downloads.search({ id: record.downloadId })
+  } else if (record.filename) {
+    items = await chrome.downloads.search({ query: [record.filename.replace(/\.png$/i, '')] })
+  }
+  const item = items
+    .filter((candidate) => recordMatchesDownload(record, candidate))
+    .sort((a, b) => Date.parse(b.startTime || 0) - Date.parse(a.startTime || 0))[0]
+  if (!item) return { ok: true, recovered: false }
+
+  if (item.state === 'complete' || item.state === 'interrupted') {
+    await finalizeFallbackDownload(item.id, item.state, item)
+    return { ok: true, recovered: true, state: item.state }
+  }
+
+  if (!Number.isInteger(record.downloadId)) {
+    await chrome.storage.session.set({
+      [TRANSFER_KEY]: makeTransferRecord(record, 'download_pending', 'download_pending', item.id, record.filename)
+    })
+  }
+  return { ok: true, recovered: true, state: item.state }
+}
+
+async function refreshHandoff() {
+  const record = await getStoredHandoff()
+  if (record?.status === 'prompt_copied') {
+    await chrome.storage.session.remove(TRANSFER_KEY)
+    return { ok: true, cleanupRetried: true }
+  }
+  return recoverPendingDownload()
+}
+
+chrome.downloads.onChanged.addListener((delta) => {
+  if (!delta.state || (delta.state.current !== 'complete' && delta.state.current !== 'interrupted')) return
+  void serializeHandoff(() => finalizeFallbackDownload(delta.id, delta.state.current)).catch(() => {})
+})
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  let operation = null
+  if (message?.type === 'SAVE_HANDOFF') operation = serializeHandoff(() => saveHandoff(message))
+  if (message?.type === 'CLEAR_HANDOFF') {
+    cancellingTransfers.add(message.transferId)
+    operation = serializeHandoff(async () => {
+      try {
+        return await clearHandoff(message.transferId, Boolean(message.reservingOnly))
+      } finally {
+        cancellingTransfers.delete(message.transferId)
+      }
+    })
+  }
+  if (message?.type === 'COMPLETE_HANDOFF') operation = serializeHandoff(() => completeHandoff(message.transferId))
+  if (message?.type === 'DOWNLOAD_PNG_FALLBACK') operation = serializeHandoff(() => startFallbackDownload(message))
+  if (message?.type === 'REFRESH_DOWNLOAD_STATUS') operation = serializeHandoff(() => refreshHandoff())
+  if (!operation) return false
+  void operation.then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || 'HANDOFF_FAILED' }))
+  return true
+})
+
+chrome.runtime.onStartup?.addListener(() => {
+  void serializeHandoff(() => refreshHandoff()).catch(() => {})
+})
 
 function findPrimaryPostImage() {
   const visible = (element) => {

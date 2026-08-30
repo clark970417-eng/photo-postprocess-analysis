@@ -30,6 +30,8 @@ const message = document.querySelector('#message')
 const photoStep = document.querySelector('#photoStep')
 const pasteStep = document.querySelector('#pasteStep')
 const promptStep = document.querySelector('#promptStep')
+const photoConfirmRow = document.querySelector('#photoConfirmRow')
+const photoConfirmed = document.querySelector('#photoConfirmed')
 
 const handoffStorage = chrome.storage.session
 
@@ -39,6 +41,7 @@ let secondaryAction = null
 let selectedImage = null
 let selectedMetadata = null
 let transfer = null
+let blockingTransferId = null
 
 function setSteps(done = [], current = null) {
   const steps = { photo: photoStep, paste: pasteStep, prompt: promptStep }
@@ -145,31 +148,84 @@ async function writePngOnly(blob) {
   }
 }
 
-function downloadPng(blob) {
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.addEventListener('load', () => resolve(reader.result), { once: true })
+    reader.addEventListener('error', () => reject(new Error('PNG_ENCODE_FAILED')), { once: true })
+    reader.readAsDataURL(blob)
+  })
+}
+
+async function startFallbackDownload(blob, record) {
+  const response = await chrome.runtime.sendMessage({
+    type: 'DOWNLOAD_PNG_FALLBACK',
+    dataUrl: await blobToDataUrl(blob),
+    filename: makeDownloadFilename(),
+    transfer: record
+  })
+  if (!response?.ok) {
+    const error = new Error(response?.error || 'DOWNLOAD_START_FAILED')
+    error.started = Boolean(response?.started)
+    error.currentStatus = response?.currentStatus || null
+    error.existingTransferId = response?.existingTransferId || null
+    throw error
+  }
+  return response
+}
+
+async function saveTransfer(record) {
+  const response = await chrome.runtime.sendMessage({ type: 'SAVE_HANDOFF', transfer: record })
+  if (!response?.ok) {
+    const error = new Error(response?.error || 'HANDOFF_SAVE_FAILED')
+    error.currentStatus = response?.currentStatus || null
+    error.existingTransferId = response?.existingTransferId || null
+    throw error
+  }
+}
+
+async function reserveTransfer(record) {
+  return saveTransfer({ ...record, status: 'photo_reserving' })
+}
+
+async function clearTransfer(record, reservingOnly = false) {
+  return clearTransferId(record?.transferId, reservingOnly)
+}
+
+async function clearTransferId(transferId, reservingOnly = false) {
+  if (!transferId) return false
   try {
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = makeDownloadFilename()
-    document.body.append(link)
-    link.click()
-    link.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 2000)
-    return true
+    const response = await chrome.runtime.sendMessage({
+      type: 'CLEAR_HANDOFF',
+      transferId,
+      reservingOnly
+    })
+    return Boolean(response?.ok)
   } catch {
     return false
   }
 }
 
-async function saveTransfer(record) {
-  if (!handoffStorage) throw new Error('HANDOFF_SAVE_FAILED')
-  await handoffStorage.set({ [TRANSFER_KEY]: record })
+async function completeTransfer(record) {
+  if (!record?.transferId) return { ok: false }
+  try {
+    return await chrome.runtime.sendMessage({
+      type: 'COMPLETE_HANDOFF',
+      transferId: record.transferId
+    })
+  } catch {
+    return { ok: false }
+  }
 }
 
 async function loadTransfer() {
   if (!handoffStorage) return null
-  const stored = await handoffStorage.get(TRANSFER_KEY)
-  return getFreshTransfer(stored[TRANSFER_KEY])
+  try {
+    const stored = await handoffStorage.get(TRANSFER_KEY)
+    return getFreshTransfer(stored[TRANSFER_KEY])
+  } catch {
+    throw new Error('HANDOFF_LOAD_FAILED')
+  }
 }
 
 function findPrimaryPostImage() {
@@ -204,6 +260,7 @@ function findPrimaryPostImage() {
 }
 
 function showError(title, hint) {
+  photoConfirmRow.hidden = true
   preview.hidden = true
   imageStage.classList.remove('ready')
   emptyState.hidden = false
@@ -219,6 +276,8 @@ function showError(title, hint) {
 }
 
 function showImage(result, platform) {
+  photoConfirmRow.hidden = true
+  photoConfirmed.checked = false
   selectedImage = result.url
   selectedMetadata = {
     platform,
@@ -239,7 +298,7 @@ function showImage(result, platform) {
   statusDot.classList.add('ready')
   dimensions.textContent = `${result.width || '—'} × ${result.height || '—'}`
   setPrimary('複製照片', 'PNG ONLY', 'copy_photo', true)
-  setSecondary('在網站開啟', '不會自動送出', 'website', true)
+  setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
   setSteps([], 'photo')
   setMessage('第一步只複製 PNG，避免 ChatGPT 把文字當成照片的替代格式。')
 }
@@ -249,10 +308,54 @@ async function showChatGptResume() {
   preview.hidden = true
   imageStage.classList.remove('ready')
   emptyState.hidden = false
-  transfer = await loadTransfer()
+  try {
+    transfer = await loadTransfer()
+  } catch {
+    showError('無法讀取交接資料', 'Opera 暫時無法使用 session storage；請重新載入擴充功能後再試。')
+    return
+  }
 
   if (!transfer) {
     showError('找不到待分析照片', '交接已過期或擴充功能剛重新載入；請回 X／Instagram 重新複製照片。')
+    return
+  }
+
+  if (transfer.status === 'photo_reserving') {
+    emptyTitle.textContent = '照片準備沒有完成'
+    emptyHint.textContent = '這筆交接尚未產生可貼上的照片'
+    sourceLabel.textContent = 'INCOMPLETE'
+    dimensions.textContent = `${transfer.width || '—'} × ${transfer.height || '—'}`
+    photoConfirmRow.hidden = true
+    setPrimary('放棄並回原貼文', 'RESET', 'abandon_handoff', true)
+    setSecondary('關閉', '不會送出任何內容', 'close', true)
+    setSteps([], 'photo')
+    setMessage('可能是在裁切或複製完成前關閉了視窗。先清除這筆準備，再重新複製照片。', true)
+    return
+  }
+
+  if (['download_starting', 'download_pending'].includes(transfer.status)) {
+    emptyTitle.textContent = 'PNG 仍在下載'
+    emptyHint.textContent = '下載完成後會自動開啟新的 ChatGPT 分頁'
+    sourceLabel.textContent = 'DOWNLOAD PENDING'
+    dimensions.textContent = `${transfer.width || '—'} × ${transfer.height || '—'}`
+    photoConfirmRow.hidden = true
+    setPrimary('等待下載完成', 'BACKGROUND', null, false)
+    setSecondary('放棄下載並回貼文', '找不到檔案時使用', 'abandon_handoff', true)
+    setSteps([], 'photo')
+    setMessage('可關閉此視窗；背景服務會等待 Opera 回報下載完成。')
+    return
+  }
+
+  if (transfer.status === 'download_failed') {
+    emptyTitle.textContent = 'PNG 下載未完成'
+    emptyHint.textContent = '下載遭取消或中斷，沒有照片可以交接'
+    sourceLabel.textContent = 'DOWNLOAD FAILED'
+    dimensions.textContent = `${transfer.width || '—'} × ${transfer.height || '—'}`
+    photoConfirmRow.hidden = true
+    setPrimary('清除並回原貼文', 'RESET', 'abandon_handoff', true)
+    setSecondary('關閉', '稍後也可重新開始', 'close', true)
+    setSteps([], 'photo')
+    setMessage('清除失敗交接後即可重新複製；不必等待 30 分鐘。', true)
     return
   }
 
@@ -264,12 +367,14 @@ async function showChatGptResume() {
   sourceLabel.textContent = 'CHATGPT HANDOFF'
   statusDot.classList.add('ready')
   dimensions.textContent = `${transfer.width || '—'} × ${transfer.height || '—'}`
-  setPrimary('已看到縮圖，複製提示', 'TEXT ONLY', 'copy_prompt', true)
+  photoConfirmRow.hidden = false
+  photoConfirmed.checked = false
+  setPrimary('確認縮圖後複製提示', 'TEXT ONLY', 'copy_prompt', false)
   setSecondary('回到照片貼文', transfer.platform || 'SOURCE', 'return_source', Number.isInteger(transfer.sourceTabId))
   setSteps(['photo'], 'paste')
   setMessage(isDownload
-    ? '上傳下載的 PNG；看到縮圖後再按上方按鈕複製提示。'
-    : '照片仍在剪貼簿。先按 ⌘V，確認出現縮圖，再複製提示。')
+    ? '上傳下載的 PNG；看到縮圖後勾選確認，才會解鎖提示按鈕。'
+    : '照片仍在剪貼簿。先按 ⌘V；看到縮圖後勾選確認，才會解鎖提示。')
 }
 
 async function detectSourceImage() {
@@ -294,37 +399,90 @@ async function handleCopyPhoto() {
   secondaryButton.disabled = true
   setMessage('正在本機裁切畫面中的貼文照片…')
 
+  let photoCopied = false
+  let fallbackStarted = false
+  let reserved = false
   try {
+    transfer = createTransfer(selectedMetadata, buildAnalysisPrompt(selectedMetadata), Date.now(), 'clipboard')
+    await reserveTransfer(transfer)
+    reserved = true
     const blob = await captureVisiblePhoto()
-    let imageMode = 'clipboard'
     try {
       await writePngOnly(blob)
+      photoCopied = true
     } catch {
-      if (!downloadPng(blob)) throw new Error('PNG_CLIPBOARD_FAILED')
-      imageMode = 'download'
+      let fallback
+      try {
+        fallback = await startFallbackDownload(blob, { ...transfer, imageMode: 'download_pending' })
+        fallbackStarted = Boolean(fallback.started)
+      } catch (error) {
+        fallbackStarted = Boolean(error?.started)
+        throw error
+      }
+      setPrimary('等待 PNG 下載', 'BACKGROUND', null, false)
+      setSecondary('背景下載進行中', '請等待完成', null, false)
+      setSteps([], 'photo')
+      setMessage(fallback.tracking === 'event_recovery'
+        ? 'PNG 已開始下載；Opera 會用唯一檔名在完成事件或下次開啟時恢復交接，請勿重複按。'
+        : '圖片剪貼簿不可用；背景下載已開始，完成後會自動開啟 ChatGPT。')
+      return
     }
 
-    transfer = createTransfer(selectedMetadata, buildAnalysisPrompt(selectedMetadata), Date.now(), imageMode)
+    transfer = { ...transfer, imageMode: 'clipboard', status: 'photo_copied' }
     await saveTransfer(transfer)
     setPrimary('開啟 ChatGPT', 'STEP 2', 'open_chatgpt', true, true)
-    setSecondary('在網站開啟', '不會自動送出', 'website', true)
+    setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
     setSteps(['photo'], 'paste')
-    setMessage(imageMode === 'clipboard'
-      ? '照片已以純 PNG 複製。開啟 ChatGPT 後按 ⌘V，確認出現縮圖。'
-      : 'Opera 未能複製圖片，已改下載 PNG；到 ChatGPT 用迴紋針上傳。')
+    setMessage('照片已以純 PNG 複製。開啟 ChatGPT 後按 ⌘V，確認出現縮圖。')
   } catch (error) {
-    const storageFailure = /storage|quota/i.test(error?.message || '')
+    if (reserved && !photoCopied && !fallbackStarted) await clearTransfer(transfer, true)
+
+    if ((error?.message === 'HANDOFF_SAVE_FAILED' || error?.message === 'HANDOFF_FAILED') && photoCopied) {
+      setPrimary('重試保存交接', '不重複複製', 'retry_save', true)
+      setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
+      setSteps(['photo'], 'paste')
+      setMessage('照片已在剪貼簿，但交接提示尚未保存；重試不會覆蓋圖片。', true)
+      return
+    }
+
+    if (error?.message === 'HANDOFF_IN_PROGRESS') {
+      blockingTransferId = error.existingTransferId
+      const preparing = error.currentStatus === 'photo_reserving'
+      setPrimary(preparing ? '清除中斷準備' : '繼續上次交接', preparing ? 'RESET' : 'STEP 2', preparing ? 'clear_blocked_reservation' : 'open_chatgpt', true)
+      setSecondary('目前只保留一組', '避免照片與提示錯配', null, false)
+      setSteps([], 'photo')
+      setMessage(preparing
+        ? '上一個照片準備沒有完成。清除後即可重新按「複製照片」。'
+        : '已有一張照片尚未完成交接。請先在 ChatGPT 完成它，再回來開始下一張。', true)
+      return
+    }
+
     setPrimary('再試一次', 'PNG ONLY', 'copy_photo', true)
-    setSecondary('在網站開啟', '手動上傳圖片', 'website', true)
+    setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
     setSteps([], 'photo')
-    setMessage(storageFailure
-      ? '照片已準備，但無法保存交接提示。請重新載入擴充功能後再試。'
-      : '無法複製或下載照片；請允許剪貼簿寫入，或改用網站手動上傳。', true)
+    setMessage('無法複製照片，下載備援也未完成；請檢查瀏覽器權限後重試。', true)
+  }
+}
+
+async function handleRetrySave() {
+  if (!transfer) return
+  primaryButton.disabled = true
+  setMessage('正在重新保存交接提示；不會改動照片剪貼簿或下載檔…')
+  try {
+    await saveTransfer(transfer)
+    setPrimary('開啟 ChatGPT', 'STEP 2', 'open_chatgpt', true, true)
+    setSteps(['photo'], 'paste')
+    setMessage(transfer.imageMode === 'clipboard'
+      ? '交接已保存。開啟 ChatGPT 後按 ⌘V，確認出現縮圖。'
+      : '交接已保存。開啟 ChatGPT 後用迴紋針上傳下載的 PNG。')
+  } catch {
+    setPrimary('重試保存交接', '不重複複製', 'retry_save', true)
+    setMessage('仍無法使用 session storage；可重新載入擴充功能後再試。', true)
   }
 }
 
 async function handleCopyPrompt() {
-  if (!transfer?.prompt) return
+  if (!transfer?.prompt || !photoConfirmed.checked) return
   primaryButton.disabled = true
   setMessage('正在複製分析提示；不會讀取或送出 ChatGPT 內容…')
   const copied = await copyText(transfer.prompt)
@@ -334,16 +492,65 @@ async function handleCopyPrompt() {
     return
   }
 
-  transfer = { ...transfer, status: 'prompt_copied', promptCopiedAt: Date.now() }
-  await saveTransfer(transfer).catch(() => {})
+  const cleanup = await completeTransfer(transfer)
+  photoConfirmRow.hidden = true
   setPrimary('提示已複製', '⌘V', 'close', true, true)
   setSteps(['photo', 'paste', 'prompt'], null)
-  setMessage('回到輸入框按 ⌘V；確認「照片縮圖＋提示文字」同時存在，再送出。')
+  setMessage(cleanup?.cleaned
+    ? '回到輸入框按 ⌘V；確認「照片縮圖＋提示文字」同時存在，再送出。'
+    : cleanup?.tombstoned
+      ? '提示已複製且已從暫存移除；空白清除標記會在下次開啟時刪除。回輸入框按 ⌘V。'
+      : '提示已複製，但 Opera 暫時無法清除交接；它會在 30 分鐘後失效。回輸入框按 ⌘V。')
   window.setTimeout(() => window.close(), 900)
+}
+
+async function returnToSource(sourceTabId) {
+  if (!Number.isInteger(sourceTabId)) return false
+  try {
+    await chrome.tabs.update(sourceTabId, { active: true })
+    window.close()
+    return true
+  } catch {
+    setMessage('原貼文分頁已關閉；請手動回到 X／Instagram。', true)
+    return false
+  }
+}
+
+async function handleAbandonHandoff() {
+  if (!transfer) return
+  primaryButton.disabled = true
+  setMessage('正在清除這筆未完成交接…')
+  const cleared = await clearTransfer(transfer)
+  if (!cleared) {
+    setPrimary('再試一次', 'RESET', 'abandon_handoff', true)
+    setMessage('暫時無法清除；請重新載入擴充功能後再試。', true)
+    return
+  }
+  if (!await returnToSource(transfer.sourceTabId)) {
+    setPrimary('已清除', 'DONE', 'close', true, true)
+  }
+}
+
+async function handleClearBlockedReservation() {
+  primaryButton.disabled = true
+  const cleared = await clearTransferId(blockingTransferId, true)
+  if (!cleared) {
+    setPrimary('再試一次', 'RESET', 'clear_blocked_reservation', true)
+    setMessage('暫時無法清除上一筆準備；請重新載入後再試。', true)
+    return
+  }
+  blockingTransferId = null
+  setPrimary('複製照片', 'PNG ONLY', 'copy_photo', true)
+  setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
+  setSteps([], 'photo')
+  setMessage('中斷的準備已清除。現在可以重新複製這張照片。')
 }
 
 async function handlePrimary() {
   if (primaryAction === 'copy_photo') return handleCopyPhoto()
+  if (primaryAction === 'retry_save') return handleRetrySave()
+  if (primaryAction === 'abandon_handoff') return handleAbandonHandoff()
+  if (primaryAction === 'clear_blocked_reservation') return handleClearBlockedReservation()
   if (primaryAction === 'open_chatgpt') {
     try {
       await chrome.tabs.create({ url: CHATGPT })
@@ -367,18 +574,15 @@ async function handleSecondary() {
     return
   }
   if (secondaryAction === 'return_source' && Number.isInteger(transfer?.sourceTabId)) {
-    try {
-      await chrome.tabs.update(transfer.sourceTabId, { active: true })
-      window.close()
-    } catch {
-      setMessage('原貼文分頁已關閉；請手動回到 X／Instagram。', true)
-    }
+    await returnToSource(transfer.sourceTabId)
     return
   }
+  if (secondaryAction === 'abandon_handoff') return handleAbandonHandoff()
   if (secondaryAction === 'close') window.close()
 }
 
 async function detectContext() {
+  await chrome.runtime.sendMessage({ type: 'REFRESH_DOWNLOAD_STATUS' }).catch(() => {})
   ;[activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
   const context = classifyPage(activeTab?.url || '')
   if (!activeTab?.id || context === 'unsupported') {
@@ -394,5 +598,17 @@ async function detectContext() {
 
 primaryButton.addEventListener('click', () => void handlePrimary())
 secondaryButton.addEventListener('click', () => void handleSecondary())
+photoConfirmed.addEventListener('change', () => {
+  if (!transfer) return
+  if (photoConfirmed.checked) {
+    setPrimary('複製分析提示', 'TEXT ONLY', 'copy_prompt', true)
+    setSteps(['photo', 'paste'], 'prompt')
+    setMessage('已確認照片縮圖。現在複製提示，再回輸入框按一次 ⌘V。')
+  } else {
+    setPrimary('確認縮圖後複製提示', 'TEXT ONLY', 'copy_prompt', false)
+    setSteps(['photo'], 'paste')
+    setMessage('先回輸入框貼上照片；看到縮圖後再勾選確認。')
+  }
+})
 
 void detectContext()

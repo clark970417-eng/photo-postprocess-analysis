@@ -6,6 +6,7 @@
   const SUPPORTED_PAGE = /^https:\/\/(x\.com|twitter\.com|www\.instagram\.com)\//i
   const CHATGPT_PAGE = /^https:\/\/(chatgpt\.com|chat\.openai\.com)\//i
   const TRANSFER_TTL_MS = 30 * 60 * 1000
+  const RESERVATION_TTL_MS = 2 * 60 * 1000
 
   function buildAnalysisPrompt(metadata = {}) {
     const source = metadata.platform || '社群貼文'
@@ -26,7 +27,7 @@
 7. 只有 Lightroom／ACR 不容易完成的效果，才補充 Photoshop 圖層與遮罩做法。若你認為可能用了 Evoto、像素蛋糕或美圖秀秀，請先描述可見操作，再提供保守的原生強度範圍，並同時給可手動重現的方法。
 8. 最後列出 3–5 個重製後應對照微調的校準點，以及哪些判斷需要原圖／成品對照才能提高信心。
 
-收到圖片時，第一行固定輸出「LUMEN_TRACE_READY v0.3｜已收到圖片」。若圖片尚未附上，只輸出「LUMEN_TRACE_NEEDS_IMAGE」，不要憑這段文字開始猜測。`
+收到圖片時，第一行固定輸出「LUMEN_TRACE_READY v0.3.1｜已收到圖片」。若圖片尚未附上，只輸出「LUMEN_TRACE_NEEDS_IMAGE」，不要憑這段文字開始猜測。`
   }
 
   function calculateCropBox(rect, viewportWidth, viewportHeight, bitmapWidth, bitmapHeight) {
@@ -45,14 +46,17 @@
   }
 
   function getFreshTransfer(value, now = Date.now()) {
-    if (!value || typeof value.prompt !== 'string' || !value.prompt.trim() || !Number.isFinite(value.savedAt)) return null
-    if (now < value.savedAt || now - value.savedAt > TRANSFER_TTL_MS) return null
+    if (!value || typeof value.transferId !== 'string' || !value.transferId || typeof value.prompt !== 'string' || !value.prompt.trim() || !Number.isFinite(value.savedAt)) return null
+    const ttl = value.status === 'photo_reserving' ? RESERVATION_TTL_MS : TRANSFER_TTL_MS
+    if (now < value.savedAt || now - value.savedAt > ttl) return null
     return value
   }
 
   function createTransfer(metadata, prompt, now = Date.now(), imageMode = 'clipboard') {
+    const transferId = globalThis.crypto?.randomUUID?.() || `lt-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`
     return {
       version: 1,
+      transferId,
       prompt,
       platform: metadata.platform || '社群貼文',
       width: metadata.width || null,
@@ -77,6 +81,7 @@
 
   return {
     CHATGPT_PAGE,
+    RESERVATION_TTL_MS,
     SUPPORTED_PAGE,
     TRANSFER_TTL_MS,
     buildAnalysisPrompt,
