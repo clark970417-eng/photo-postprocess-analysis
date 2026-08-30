@@ -4,13 +4,13 @@ const SUPPORTED_PAGES = ['https://x.com/*', 'https://twitter.com/*', 'https://ww
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: 'lumen-analyze-image',
-    title: '用 Lumen Trace 分析這張圖片',
+    title: '在 Lumen Trace 網站開啟這張圖片',
     contexts: ['image'],
     documentUrlPatterns: SUPPORTED_PAGES
   })
   chrome.contextMenus.create({
     id: 'lumen-analyze-post',
-    title: '分析這篇貼文的主要圖片',
+    title: '在 Lumen Trace 網站開啟貼文主圖',
     contexts: ['page'],
     documentUrlPatterns: SUPPORTED_PAGES
   })
@@ -20,7 +20,6 @@ function openAnalyzer(imageUrl) {
   if (!imageUrl || !/^https:\/\//i.test(imageUrl)) return
   const url = new URL(ANALYZER)
   url.searchParams.set('source', imageUrl)
-  url.searchParams.set('autostart', '1')
   chrome.tabs.create({ url: url.toString() })
 }
 

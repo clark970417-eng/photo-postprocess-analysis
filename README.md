@@ -39,9 +39,9 @@ Analyze several public photos by this author and identify only the post-processi
 
 ## Opera GX extension
 
-The optional `browser-extension` folder adds a user-triggered shortcut for X and Instagram. Right-click a post image, click the toolbar button, or use the keyboard shortcut to open that image in the Lumen Trace analyzer.
+The optional `browser-extension` folder adds a user-triggered shortcut for X and Instagram. Its primary action crops the visible post photo locally, places the photo and an evidence-based Traditional Chinese analysis prompt on the clipboard, and opens ChatGPT. The user still confirms the transfer by pressing paste in ChatGPT; the extension neither uploads the photo automatically nor operates the ChatGPT page. If the browser cannot place an image on the clipboard, it falls back to copying the prompt so the user can upload the photo manually. A secondary action, image context menu, and keyboard shortcut can open the source image in the Lumen Trace website without automatically submitting an API request.
 
-In Opera GX, open `opera:extensions`, enable Developer Mode, choose **Load unpacked**, and select the extracted `browser-extension` directory. The extension requests only `activeTab`, `contextMenus`, and `scripting`; it does not request cookies, browsing history, passwords, or persistent access to every site.
+In Opera GX, open `opera:extensions`, enable Developer Mode, choose **Load unpacked**, and select the extracted `browser-extension` directory. The extension requests only `activeTab`, `clipboardWrite`, `contextMenus`, and `scripting`; it does not request cookies, browsing history, passwords, or persistent access to every site. `clipboardWrite` is used only after the user asks to prepare the visible photo and professional prompt for ChatGPT.
 
 ## Command-line tools
 

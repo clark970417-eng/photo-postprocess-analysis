@@ -16,7 +16,7 @@
             <small>POST-PROCESS READER</small>
           </span>
         </div>
-        <span class="version">GX · 0.1</span>
+        <span class="version">GX · 0.2</span>
       </header>
 
       <section class="viewfinder" aria-live="polite">
@@ -46,14 +46,21 @@
         <span><i class="detail"></i>局部質感</span>
       </section>
 
-      <button class="primary" id="analyzeButton" type="button" disabled>
-        <span>分析這張照片</span>
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M4 10h11M11 6l4 4-4 4" />
-        </svg>
-      </button>
+      <div class="actions">
+        <button class="primary" id="chatgptButton" type="button" aria-describedby="message" disabled>
+          <span class="cta-label">用 ChatGPT 分析 <small>免 API</small></span>
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M4 10h11M11 6l4 4-4 4" />
+          </svg>
+        </button>
 
-      <p class="message" id="message">只在你按下按鈕後傳送這張公開貼文圖片。</p>
+        <button class="secondary" id="websiteButton" type="button" aria-describedby="message" disabled>
+          <span>在網站開啟</span>
+          <small>不會自動送出</small>
+        </button>
+      </div>
+
+      <p class="message" id="message" role="status" aria-live="polite">會在本機複製照片與專業提示；到 ChatGPT 按 ⌘V 即可貼上。</p>
 
       <footer>
         <span>不讀取 Cookie、私訊或瀏覽紀錄</span>
