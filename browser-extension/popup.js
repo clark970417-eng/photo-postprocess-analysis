@@ -8,7 +8,8 @@ const {
   classifyPage,
   createTransfer,
   getFreshTransfer,
-  makeDownloadFilename
+  makeDownloadFilename,
+  makeSourceDownloadFilename
 } = globalThis.LumenTraceCore
 
 const panel = document.querySelector('.panel')
@@ -39,6 +40,7 @@ let activeTab = null
 let primaryAction = null
 let secondaryAction = null
 let selectedImage = null
+let selectedSourceUrl = null
 let selectedMetadata = null
 let transfer = null
 let blockingTransferId = null
@@ -174,6 +176,23 @@ async function startFallbackDownload(blob, record) {
   return response
 }
 
+async function startSourceDownload(record) {
+  const response = await chrome.runtime.sendMessage({
+    type: 'DOWNLOAD_SOURCE_HANDOFF',
+    sourceUrl: selectedSourceUrl,
+    filename: makeSourceDownloadFilename(record.platform, selectedSourceUrl),
+    transfer: record
+  })
+  if (!response?.ok) {
+    const error = new Error(response?.error || 'DOWNLOAD_START_FAILED')
+    error.started = Boolean(response?.started)
+    error.currentStatus = response?.currentStatus || null
+    error.existingTransferId = response?.existingTransferId || null
+    throw error
+  }
+  return response
+}
+
 async function saveTransfer(record) {
   const response = await chrome.runtime.sendMessage({ type: 'SAVE_HANDOFF', transfer: record })
   if (!response?.ok) {
@@ -229,16 +248,33 @@ async function loadTransfer() {
 }
 
 function findPrimaryPostImage() {
+  const isStory = /^\/stories\//i.test(location.pathname)
   const visible = (element) => {
     const rect = element.getBoundingClientRect()
-    return rect.width > 160 && rect.height > 160 && rect.bottom > 0 && rect.top < innerHeight
+    const minimum = isStory ? 260 : 160
+    const style = getComputedStyle(element)
+    const hiddenByAccessibility = Boolean(element.closest('[aria-hidden="true"]'))
+    const centerX = Math.min(innerWidth - 1, Math.max(0, (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2))
+    const centerY = Math.min(innerHeight - 1, Math.max(0, (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2))
+    const paintedAtCenter = !isStory || document.elementsFromPoint(centerX, centerY).includes(element)
+    return rect.width > minimum && rect.height > minimum && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth &&
+      style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0.01 && !hiddenByAccessibility && paintedAtCenter
   }
   const score = (image) => {
     const rect = image.getBoundingClientRect()
     const viewportOverlap = Math.max(0, Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0))
-    const centerDistance = Math.abs((rect.top + rect.bottom) / 2 - innerHeight / 2)
+    const verticalDistance = Math.abs((rect.top + rect.bottom) / 2 - innerHeight / 2)
+    const horizontalDistance = Math.abs((rect.left + rect.right) / 2 - innerWidth / 2)
     const articleBonus = image.closest('article') ? 1.35 : 1
-    return (rect.width * viewportOverlap + 14000 / (1 + centerDistance)) * articleBonus
+    const storyBonus = isStory ? 2.2 / (1 + horizontalDistance / Math.max(1, innerWidth)) : 1
+    return (rect.width * viewportOverlap + 14000 / (1 + verticalDistance)) * articleBonus * storyBonus
+  }
+  const highestSource = (image) => {
+    const entries = String(image.srcset || '').split(',').map((entry) => {
+      const match = entry.trim().match(/^(https:\/\/\S+)\s+(\d+)w$/i)
+      return match ? { url: match[1], width: Number(match[2]) } : null
+    }).filter(Boolean).sort((a, b) => b.width - a.width)
+    return entries[0]?.url || image.currentSrc || image.src || null
   }
   const candidates = Array.from(document.images).filter(visible)
   candidates.sort((a, b) => score(b) - score(a))
@@ -251,6 +287,8 @@ function findPrimaryPostImage() {
   const bottom = Math.min(innerHeight, rect.bottom)
   return {
     url: image.currentSrc || image.src || null,
+    sourceUrl: highestSource(image),
+    isStory,
     width: image.naturalWidth || Math.round(rect.width),
     height: image.naturalHeight || Math.round(rect.height),
     viewportWidth: innerWidth,
@@ -279,6 +317,7 @@ function showImage(result, platform) {
   photoConfirmRow.hidden = true
   photoConfirmed.checked = false
   selectedImage = result.url
+  selectedSourceUrl = result.sourceUrl || result.url
   selectedMetadata = {
     platform,
     width: result.width,
@@ -297,10 +336,17 @@ function showImage(result, platform) {
   sourceLabel.textContent = platform
   statusDot.classList.add('ready')
   dimensions.textContent = `${result.width || '—'} × ${result.height || '—'}`
-  setPrimary('複製照片', 'PNG ONLY', 'copy_photo', true)
-  setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
+  if (platform === 'IG STORY') {
+    setPrimary('原畫質下載並交接', 'NO RE-ENCODE', 'download_source', true)
+    setSecondary('改用畫面複製', 'PNG 備援', 'copy_photo', true)
+  } else {
+    setPrimary('複製照片', 'PNG ONLY', 'copy_photo', true)
+    setSecondary('連圖片網址在網站開啟', '會帶入來源網址', 'website', true)
+  }
   setSteps([], 'photo')
-  setMessage('第一步只複製 PNG，避免 ChatGPT 把文字當成照片的替代格式。')
+  setMessage(platform === 'IG STORY'
+    ? '會下載 Instagram 此刻提供給瀏覽器的照片檔，不截圖、不重新壓縮；IG 上傳時可能已壓縮。'
+    : '第一步只複製 PNG，避免 ChatGPT 把文字當成照片的替代格式。')
 }
 
 async function showChatGptResume() {
@@ -334,7 +380,7 @@ async function showChatGptResume() {
   }
 
   if (['download_starting', 'download_pending'].includes(transfer.status)) {
-    emptyTitle.textContent = 'PNG 仍在下載'
+    emptyTitle.textContent = '照片檔仍在下載'
     emptyHint.textContent = '下載完成後會自動開啟新的 ChatGPT 分頁'
     sourceLabel.textContent = 'DOWNLOAD PENDING'
     dimensions.textContent = `${transfer.width || '—'} × ${transfer.height || '—'}`
@@ -347,7 +393,7 @@ async function showChatGptResume() {
   }
 
   if (transfer.status === 'download_failed') {
-    emptyTitle.textContent = 'PNG 下載未完成'
+    emptyTitle.textContent = '照片下載未完成'
     emptyHint.textContent = '下載遭取消或中斷，沒有照片可以交接'
     sourceLabel.textContent = 'DOWNLOAD FAILED'
     dimensions.textContent = `${transfer.width || '—'} × ${transfer.height || '—'}`
@@ -360,9 +406,9 @@ async function showChatGptResume() {
   }
 
   const isDownload = transfer.imageMode === 'download'
-  emptyTitle.textContent = isDownload ? '請先上傳下載的 PNG' : '請先確認照片縮圖'
+  emptyTitle.textContent = isDownload ? '請先上傳下載的照片' : '請先確認照片縮圖'
   emptyHint.textContent = isDownload
-    ? '用 ChatGPT 的迴紋針選擇最新 Lumen-Trace PNG'
+    ? '用 ChatGPT 的迴紋針選擇最新 Lumen-Trace 圖片'
     : '回到輸入框按 ⌘V；看到縮圖後再做第 3 步'
   sourceLabel.textContent = 'CHATGPT HANDOFF'
   statusDot.classList.add('ready')
@@ -373,7 +419,7 @@ async function showChatGptResume() {
   setSecondary('回到照片貼文', transfer.platform || 'SOURCE', 'return_source', Number.isInteger(transfer.sourceTabId))
   setSteps(['photo'], 'paste')
   setMessage(isDownload
-    ? '上傳下載的 PNG；看到縮圖後勾選確認，才會解鎖提示按鈕。'
+    ? '上傳下載的照片；看到縮圖後勾選確認，才會解鎖提示按鈕。'
     : '照片仍在剪貼簿。先按 ⌘V；看到縮圖後勾選確認，才會解鎖提示。')
 }
 
@@ -387,10 +433,47 @@ async function detectSourceImage() {
       showError('沒有找到可分析圖片', '將貼文圖片捲動到畫面中央後再試一次。')
       return
     }
-    const platform = /instagram\.com/i.test(activeTab.url) ? 'INSTAGRAM' : 'X POST'
+    const isInstagram = /^https:\/\/www\.instagram\.com\//i.test(activeTab.url || '')
+    const platform = isInstagram && result.isStory ? 'IG STORY' : isInstagram ? 'INSTAGRAM' : 'X POST'
     showImage(result, platform)
   } catch {
     showError('無法讀取目前分頁', '重新整理貼文頁面後再試一次。')
+  }
+}
+
+async function handleDownloadSource() {
+  primaryButton.disabled = true
+  secondaryButton.disabled = true
+  setMessage('正在取得 Instagram 當下提供的照片檔；不會重新編碼…')
+
+  let reserved = false
+  let downloadStarted = false
+  try {
+    transfer = createTransfer(selectedMetadata, buildAnalysisPrompt(selectedMetadata), Date.now(), 'download_pending')
+    await reserveTransfer(transfer)
+    reserved = true
+    const result = await startSourceDownload({ ...transfer, imageMode: 'download_pending' })
+    downloadStarted = Boolean(result.started)
+    setPrimary('等待照片下載', 'BACKGROUND', null, false)
+    setSecondary('下載進行中', '完成後自動開啟 ChatGPT', null, false)
+    setSteps([], 'photo')
+    setMessage(result.tracking === 'event_recovery'
+      ? '下載已開始；Opera 會在完成事件或下次開啟時恢復這筆交接，請勿重複按。'
+      : '下載完成後會自動開啟 ChatGPT；再用迴紋針上傳最新的 Lumen-Trace 圖片。')
+  } catch (error) {
+    if (reserved && !downloadStarted) await clearTransfer(transfer, true)
+    if (error?.message === 'HANDOFF_IN_PROGRESS') {
+      blockingTransferId = error.existingTransferId
+      const preparing = error.currentStatus === 'photo_reserving'
+      setPrimary(preparing ? '清除中斷準備' : '繼續上次交接', preparing ? 'RESET' : 'STEP 2', preparing ? 'clear_blocked_reservation' : 'open_chatgpt', true)
+      setSecondary('目前只保留一組', '避免照片與提示錯配', null, false)
+      setMessage(preparing ? '上一筆準備沒有完成；清除後即可重試。' : '已有一張照片尚未完成交接。請先完成它。', true)
+      return
+    }
+    setPrimary('改用畫面複製', 'PNG 備援', 'copy_photo', true)
+    setSecondary('重新偵測限動', '來源可能已過期', 'close', true)
+    setSteps([], 'photo')
+    setMessage('Instagram 來源檔無法下載，可能是限動已切換或簽名網址過期；可改用畫面 PNG。', true)
   }
 }
 
@@ -548,6 +631,7 @@ async function handleClearBlockedReservation() {
 
 async function handlePrimary() {
   if (primaryAction === 'copy_photo') return handleCopyPhoto()
+  if (primaryAction === 'download_source') return handleDownloadSource()
   if (primaryAction === 'retry_save') return handleRetrySave()
   if (primaryAction === 'abandon_handoff') return handleAbandonHandoff()
   if (primaryAction === 'clear_blocked_reservation') return handleClearBlockedReservation()

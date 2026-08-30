@@ -11,6 +11,7 @@ let storageGetGate = null
 let failNextStorageRemove = false
 const createdTabs = []
 const downloads = new Map()
+const downloadRequests = []
 const listeners = {}
 
 global.chrome = {
@@ -27,11 +28,18 @@ global.chrome = {
     onCommand: { addListener: (listener) => { listeners.command = listener } }
   },
   downloads: {
-    download: async ({ filename }) => {
+    download: async (request) => {
+      const { filename } = request
+      downloadRequests.push(request)
+      const extension = filename.split('.').pop().toLowerCase()
+      const mime = ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/avif' })[extension] || ''
       const id = ++nextDownloadId
       downloads.set(id, {
         id,
         filename: `/Downloads/${filename}`,
+        url: request.url,
+        finalUrl: request.url,
+        mime,
         startTime: new Date().toISOString(),
         state: nextDownloadState
       })
@@ -119,6 +127,7 @@ test.beforeEach(() => {
   handoff = {}
   downloads.clear()
   createdTabs.length = 0
+  downloadRequests.length = 0
   nextDownloadState = 'in_progress'
   failingStorageSetCalls = new Set()
   storageGetGate = null
@@ -157,6 +166,70 @@ test('background owns fallback state and opens only one ChatGPT tab after comple
   assert.equal(handoff.lumenTraceHandoff.status, 'photo_downloaded')
   assert.equal(handoff.lumenTraceHandoff.imageMode, 'download')
   assert.deepEqual(createdTabs, [{ url: 'https://chatgpt.com/' }])
+})
+
+test('downloads an Instagram Story source without storing its signed URL', async () => {
+  const transfer = { ...makeTransfer(), platform: 'IG STORY' }
+  const sourceUrl = 'https://scontent-lax3-1.cdninstagram.com/v/t51/photo.webp?sig=secret'
+  await sendMessage({ type: 'SAVE_HANDOFF', transfer })
+  const response = await sendMessage({
+    type: 'DOWNLOAD_SOURCE_HANDOFF',
+    sourceUrl,
+    filename: 'Lumen-Trace-IG-Story-2026-08-30.webp',
+    transfer
+  })
+
+  assert.equal(response.ok, true)
+  assert.equal(downloadRequests[0].url, sourceUrl)
+  assert.equal(handoff.lumenTraceHandoff.sourceUrl, undefined)
+  assert.equal(handoff.lumenTraceHandoff.status, 'download_pending')
+
+  downloads.get(response.downloadId).state = 'complete'
+  listeners.downloadChanged({ id: response.downloadId, state: { current: 'complete' } })
+  await flushAsyncWork()
+  assert.equal(handoff.lumenTraceHandoff.status, 'photo_downloaded')
+  assert.deepEqual(createdTabs, [{ url: 'https://chatgpt.com/' }])
+})
+
+test('rejects arbitrary source hosts and non-Story source transfers', async () => {
+  const story = { ...makeTransfer(), platform: 'IG STORY' }
+  const evil = await sendMessage({
+    type: 'DOWNLOAD_SOURCE_HANDOFF',
+    sourceUrl: 'https://evil.example/photo.jpg',
+    filename: 'Lumen-Trace-IG-Story-2026-08-30.jpg',
+    transfer: story
+  })
+  const post = await sendMessage({
+    type: 'DOWNLOAD_SOURCE_HANDOFF',
+    sourceUrl: 'https://scontent.cdninstagram.com/photo.jpg',
+    filename: 'Lumen-Trace-IG-Story-2026-08-30.jpg',
+    transfer: makeTransfer()
+  })
+
+  assert.equal(evil.error, 'INVALID_DOWNLOAD_REQUEST')
+  assert.equal(post.error, 'INVALID_DOWNLOAD_REQUEST')
+  assert.equal(downloadRequests.length, 0)
+})
+
+test('rejects a completed Story download that redirects off the allowlist or is not an image', async () => {
+  for (const invalid of [
+    { finalUrl: 'https://evil.example/photo.jpg', mime: 'image/jpeg' },
+    { finalUrl: 'https://scontent.cdninstagram.com/error.jpg', mime: 'text/html' }
+  ]) {
+    const transfer = { ...makeTransfer(`transfer-${Math.random().toString(36).slice(2, 10)}`), platform: 'IG STORY' }
+    const response = await sendMessage({
+      type: 'DOWNLOAD_SOURCE_HANDOFF',
+      sourceUrl: 'https://scontent.cdninstagram.com/photo.jpg?sig=valid',
+      filename: 'Lumen-Trace-IG-Story-2026-08-30.jpg',
+      transfer
+    })
+    Object.assign(downloads.get(response.downloadId), invalid, { state: 'complete' })
+    listeners.downloadChanged({ id: response.downloadId, state: { current: 'complete' } })
+    await flushAsyncWork()
+    assert.equal(handoff.lumenTraceHandoff.status, 'download_failed')
+    assert.equal(createdTabs.length, 0)
+    handoff = {}
+  }
 })
 
 test('refresh recovers a uniquified filename after a failed download-id write', async () => {

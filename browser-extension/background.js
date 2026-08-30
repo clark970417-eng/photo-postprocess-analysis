@@ -30,12 +30,38 @@ function openAnalyzer(imageUrl) {
   chrome.tabs.create({ url: url.toString() })
 }
 
-function validFallbackRequest(message) {
-  return message?.type === 'DOWNLOAD_PNG_FALLBACK' &&
-    typeof message.dataUrl === 'string' &&
-    message.dataUrl.startsWith('data:image/png;base64,') &&
-    /^Lumen-Trace-[A-Za-z0-9_.-]+\.png$/.test(message.filename || '') &&
-    validTransfer(message.transfer)
+function validInstagramSourceUrl(value) {
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    return url.protocol === 'https:' && (
+      hostname === 'instagram.com' ||
+      hostname.endsWith('.instagram.com') ||
+      hostname === 'cdninstagram.com' ||
+      hostname.endsWith('.cdninstagram.com') ||
+      hostname === 'fbcdn.net' ||
+      hostname.endsWith('.fbcdn.net')
+    )
+  } catch {
+    return false
+  }
+}
+
+function getDownloadRequestUrl(message) {
+  if (!validTransfer(message?.transfer)) return null
+  if (message.type === 'DOWNLOAD_PNG_FALLBACK' &&
+      typeof message.dataUrl === 'string' &&
+      message.dataUrl.startsWith('data:image/png;base64,') &&
+      /^Lumen-Trace-[A-Za-z0-9_.-]+\.png$/.test(message.filename || '')) {
+    return message.dataUrl
+  }
+  if (message.type === 'DOWNLOAD_SOURCE_HANDOFF' &&
+      message.transfer.platform === 'IG STORY' &&
+      validInstagramSourceUrl(message.sourceUrl) &&
+      /^Lumen-Trace-IG-Story-[A-Za-z0-9_.-]+\.(?:jpe?g|png|webp|avif)$/i.test(message.filename || '')) {
+    return message.sourceUrl
+  }
+  return null
 }
 
 function validTransfer(transfer) {
@@ -48,7 +74,7 @@ function validTransfer(transfer) {
     Number.isFinite(transfer.savedAt)
 }
 
-function makeTransferRecord(transfer, status, imageMode, downloadId = null, filename = null) {
+function makeTransferRecord(transfer, status, imageMode, downloadId = null, filename = null, downloadKind = null) {
   const record = {
     version: 1,
     transferId: transfer.transferId,
@@ -63,6 +89,8 @@ function makeTransferRecord(transfer, status, imageMode, downloadId = null, file
   }
   if (Number.isInteger(downloadId)) record.downloadId = downloadId
   if (typeof filename === 'string' && filename) record.filename = filename
+  const safeDownloadKind = downloadKind || (['source', 'png_fallback'].includes(transfer.downloadKind) ? transfer.downloadKind : null)
+  if (safeDownloadKind) record.downloadKind = safeDownloadKind
   return record
 }
 
@@ -163,14 +191,19 @@ async function finalizeFallbackDownload(downloadId, state, knownItem = null) {
     if (!recordMatchesDownload(record, item)) return
     if (cancellingTransfers.has(record.transferId)) return
 
-    if (state === 'complete') {
+    const validSourceCompletion = record.downloadKind !== 'source' || (
+      validInstagramSourceUrl(item?.finalUrl || item?.url) &&
+      ['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(String(item?.mime || '').toLowerCase())
+    )
+
+    if (state === 'complete' && validSourceCompletion) {
       const completed = makeTransferRecord(record, 'photo_downloaded', 'download')
       await chrome.storage.session.set({ [TRANSFER_KEY]: completed })
       await chrome.tabs.create({ url: CHATGPT }).catch(() => {})
       return
     }
 
-    if (state === 'interrupted') {
+    if (state === 'interrupted' || (state === 'complete' && !validSourceCompletion)) {
       const failed = makeTransferRecord(record, 'download_failed', 'download')
       await chrome.storage.session.set({ [TRANSFER_KEY]: failed })
     }
@@ -179,8 +212,9 @@ async function finalizeFallbackDownload(downloadId, state, knownItem = null) {
   }
 }
 
-async function startFallbackDownload(message) {
-  if (!validFallbackRequest(message)) return { ok: false, error: 'INVALID_DOWNLOAD_REQUEST' }
+async function startTrackedDownload(message) {
+  const downloadUrl = getDownloadRequestUrl(message)
+  if (!downloadUrl) return { ok: false, error: 'INVALID_DOWNLOAD_REQUEST' }
 
   const existing = await getStoredHandoff()
   if (isFreshHandoff(existing) && existing.transferId !== message.transfer.transferId) {
@@ -193,7 +227,8 @@ async function startFallbackDownload(message) {
     }
   }
 
-  const starting = makeTransferRecord(message.transfer, 'download_starting', 'download_pending', null, message.filename)
+  const downloadKind = message.type === 'DOWNLOAD_SOURCE_HANDOFF' ? 'source' : 'png_fallback'
+  const starting = makeTransferRecord(message.transfer, 'download_starting', 'download_pending', null, message.filename, downloadKind)
   try {
     await chrome.storage.session.set({ [TRANSFER_KEY]: starting })
   } catch {
@@ -203,7 +238,7 @@ async function startFallbackDownload(message) {
   let downloadId
   try {
     downloadId = await chrome.downloads.download({
-      url: message.dataUrl,
+      url: downloadUrl,
       filename: message.filename,
       conflictAction: 'uniquify',
       saveAs: false
@@ -215,7 +250,7 @@ async function startFallbackDownload(message) {
     return { ok: false, error: 'DOWNLOAD_START_FAILED', started: false }
   }
 
-  const pending = makeTransferRecord(message.transfer, 'download_pending', 'download_pending', downloadId, message.filename)
+  const pending = makeTransferRecord(message.transfer, 'download_pending', 'download_pending', downloadId, message.filename, downloadKind)
   let tracking = 'active'
 
   try {
@@ -242,7 +277,7 @@ async function recoverPendingDownload() {
   if (Number.isInteger(record.downloadId)) {
     items = await chrome.downloads.search({ id: record.downloadId })
   } else if (record.filename) {
-    items = await chrome.downloads.search({ query: [record.filename.replace(/\.png$/i, '')] })
+    items = await chrome.downloads.search({ query: [record.filename.replace(/\.[a-z0-9]{2,5}$/i, '')] })
   }
   const item = items
     .filter((candidate) => recordMatchesDownload(record, candidate))
@@ -290,7 +325,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })
   }
   if (message?.type === 'COMPLETE_HANDOFF') operation = serializeHandoff(() => completeHandoff(message.transferId))
-  if (message?.type === 'DOWNLOAD_PNG_FALLBACK') operation = serializeHandoff(() => startFallbackDownload(message))
+  if (message?.type === 'DOWNLOAD_PNG_FALLBACK' || message?.type === 'DOWNLOAD_SOURCE_HANDOFF') {
+    operation = serializeHandoff(() => startTrackedDownload(message))
+  }
   if (message?.type === 'REFRESH_DOWNLOAD_STATUS') operation = serializeHandoff(() => refreshHandoff())
   if (!operation) return false
   void operation.then(sendResponse).catch((error) => sendResponse({ ok: false, error: error?.message || 'HANDOFF_FAILED' }))

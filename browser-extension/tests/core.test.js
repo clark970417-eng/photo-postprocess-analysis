@@ -25,7 +25,7 @@ test('analysis prompt carries evidence rules and a visible version handshake', (
   const prompt = core.buildAnalysisPrompt({ platform: 'X POST', width: 1600, height: 1067 })
   assert.match(prompt, /觀察.*推論.*其他解釋.*信心/s)
   assert.match(prompt, /Lightroom Classic／Adobe Camera Raw/)
-  assert.match(prompt, /LUMEN_TRACE_READY v0\.3\.1/)
+  assert.match(prompt, /LUMEN_TRACE_READY v0\.4\.0/)
   assert.match(prompt, /1600 × 1067/)
 })
 
@@ -72,9 +72,18 @@ test('download name is deterministic and filesystem-safe', () => {
   assert.equal(core.makeDownloadFilename(new Date('2026-08-30T04:03:02.001Z')), 'Lumen-Trace-2026-08-30_04-03-02-001.png')
 })
 
+test('source download name preserves supported served formats and rejects unknown formats', () => {
+  const now = new Date('2026-08-30T04:03:02.001Z')
+  assert.equal(
+    core.makeSourceDownloadFilename('IG STORY', 'https://scontent.cdninstagram.com/photo.webp?sig=1', now),
+    'Lumen-Trace-IG-Story-2026-08-30_04-03-02-001.webp'
+  )
+  assert.equal(core.makeSourceDownloadFilename('IG STORY', 'https://scontent.cdninstagram.com/photo?sig=1', now), null)
+})
+
 test('manifest adds session storage but no ChatGPT host permission', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'))
-  assert.equal(manifest.version, '0.3.1')
+  assert.equal(manifest.version, '0.4.0')
   assert.ok(manifest.permissions.includes('storage'))
   assert.ok(manifest.permissions.includes('downloads'))
   assert.equal(manifest.host_permissions, undefined)
@@ -105,6 +114,21 @@ test('download fallback waits for a completed browser download', () => {
   assert.match(background, /filenameMatches\(item\.filename, record\.filename\)/)
   assert.match(background, /serializeHandoff\(\(\) => finalizeFallbackDownload/)
   assert.doesNotMatch(background, /link\.click\(\)/)
+})
+
+test('Instagram Story uses a direct source download with a PNG fallback', () => {
+  const popup = fs.readFileSync(path.join(extensionRoot, 'popup.js'), 'utf8')
+  const background = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8')
+  assert.match(popup, /\/stories\\\/\//)
+  assert.match(popup, /NO RE-ENCODE/)
+  assert.match(popup, /DOWNLOAD_SOURCE_HANDOFF/)
+  assert.match(popup, /PNG 備援/)
+  assert.match(popup, /elementsFromPoint/)
+  assert.match(popup, /aria-hidden="true"/)
+  assert.match(popup, /getComputedStyle/)
+  assert.match(background, /validInstagramSourceUrl/)
+  assert.match(background, /cdninstagram\.com/)
+  assert.match(background, /fbcdn\.net/)
 })
 
 test('prompt copying is gated by an explicit thumbnail confirmation', () => {

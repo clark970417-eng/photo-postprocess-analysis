@@ -27,7 +27,7 @@
 7. 只有 Lightroom／ACR 不容易完成的效果，才補充 Photoshop 圖層與遮罩做法。若你認為可能用了 Evoto、像素蛋糕或美圖秀秀，請先描述可見操作，再提供保守的原生強度範圍，並同時給可手動重現的方法。
 8. 最後列出 3–5 個重製後應對照微調的校準點，以及哪些判斷需要原圖／成品對照才能提高信心。
 
-收到圖片時，第一行固定輸出「LUMEN_TRACE_READY v0.3.1｜已收到圖片」。若圖片尚未附上，只輸出「LUMEN_TRACE_NEEDS_IMAGE」，不要憑這段文字開始猜測。`
+收到圖片時，第一行固定輸出「LUMEN_TRACE_READY v0.4.0｜已收到圖片」。若圖片尚未附上，只輸出「LUMEN_TRACE_NEEDS_IMAGE」，不要憑這段文字開始猜測。`
   }
 
   function calculateCropBox(rect, viewportWidth, viewportHeight, bitmapWidth, bitmapHeight) {
@@ -79,6 +79,17 @@
     return `Lumen-Trace-${stamp}.png`
   }
 
+  function makeSourceDownloadFilename(platform = 'SOURCE', sourceUrl = '', now = new Date()) {
+    const stamp = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+    const label = String(platform).toUpperCase() === 'IG STORY' ? 'IG-Story' : 'Source'
+    let extension = null
+    try {
+      const match = new URL(sourceUrl).pathname.match(/\.([a-z0-9]{2,5})$/i)
+      if (match && ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(match[1].toLowerCase())) extension = match[1].toLowerCase()
+    } catch {}
+    return extension ? `Lumen-Trace-${label}-${stamp}.${extension}` : null
+  }
+
   return {
     CHATGPT_PAGE,
     RESERVATION_TTL_MS,
@@ -91,6 +102,7 @@
     getFreshTransfer,
     isChatGPTPage: (url = '') => CHATGPT_PAGE.test(url),
     isSupportedPage: (url = '') => SUPPORTED_PAGE.test(url),
-    makeDownloadFilename
+    makeDownloadFilename,
+    makeSourceDownloadFilename
   }
 })
